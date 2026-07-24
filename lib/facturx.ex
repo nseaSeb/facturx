@@ -60,12 +60,21 @@ defmodule Facturx do
   defdelegate build(invoice, opts \\ []), to: CII
 
   @doc """
-  Validate CII XML against the EN 16931 Schematron rules.
+  Validate CII XML against the EN 16931 Schematron (business rules).
 
   Optional: requires a reachable Saxon endpoint (`:endpoint` opt) and the `req`
-  dependency. Disabled by default — see `Facturx.Validate`.
+  dependency. See `Facturx.Validate`.
   """
   @spec validate(binary(), keyword()) ::
           {:ok, :valid} | {:error, {:invalid, [map()]}} | {:error, term()}
   defdelegate validate(xml, opts \\ []), to: Validate
+
+  @doc """
+  Validate CII XML against the EN 16931 **XSD** (structure/types).
+
+  Pure Elixir, in-process (OTP `:xmerl_xsd`) — no external tool. See `Facturx.XSD`.
+  """
+  @spec validate_xsd(binary(), keyword()) ::
+          {:ok, :valid} | {:error, {:invalid, [String.t()]}} | {:error, term()}
+  defdelegate validate_xsd(xml, opts \\ []), to: Facturx.XSD, as: :validate
 end

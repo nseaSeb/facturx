@@ -22,6 +22,7 @@ projects, and to fill the gap on Hex.pm.
 | Parse CII XML into a struct | `Facturx.CII` | none (pure Elixir) |
 | Extract the embedded XML from a PDF | `Facturx.Extract` | none (pure Elixir) |
 | Embed XML into an existing PDF/A-3 | `Facturx.Embed` | none (pure Elixir) |
+| Validate against EN 16931 XSD | `Facturx.XSD` | none (pure Elixir, OTP `:xmerl_xsd`) |
 | Validate against EN 16931 Schematron | `Facturx.Validate` | **optional** — `:req` + a Saxon HTTP endpoint |
 
 The EN 16931 Schematron ships compiled in `priv/schematron/`. `validate/2` posts
@@ -99,9 +100,17 @@ invoice = %Facturx.Invoice{
 {:ok, invoice} = Facturx.parse(xml)
 ```
 
-### Optional Schematron validation
+### Validate
 
-Needs a reachable Saxon server (see `Facturx.Validate`):
+XSD (structure/types) — **pure Elixir, in-process**, no external tool:
+
+```elixir
+{:ok, :valid} = Facturx.validate_xsd(xml)
+# {:error, {:invalid, ["...invalid_decimal...", ...]}} on a bad document
+```
+
+Schematron (EN 16931 business rules) — needs a reachable Saxon server
+(see `Facturx.Validate`):
 
 ```elixir
 {:ok, :valid} = Facturx.validate(xml, endpoint: "http://localhost:5000/transform")

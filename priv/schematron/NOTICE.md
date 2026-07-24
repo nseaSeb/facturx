@@ -12,4 +12,8 @@ The compiled Schematron XSLT and code-list databases under this directory are
   (see the akretion/factur-x repository for the full text). The underlying
   Schematron is published by FNFE-MPE / the Factur-X standard.
 
+The XSD schemas under `priv/xsd/en16931/` (`Factur-X_EN16931.xsd` and its three
+imported UN/CEFACT schemas) share the same origin — the Factur-X / EN 16931
+standard as packaged by `akretion/factur-x`.
+
 These files are provided as-is; refer to the upstream projects for their terms.

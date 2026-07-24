@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.0] - 2026-07-24
+
+### Added
+- `Facturx.XSD.validate/2` + `Facturx.validate_xsd/2`: validate CII XML against
+  the EN 16931 **XSD**, in **pure Elixir, in-process** via OTP `:xmerl_xsd` — no
+  external tool, no network, no Port. Catches missing mandatory elements, wrong
+  data types, unexpected elements, wrong order and cardinality. Bundled schema:
+  `priv/xsd/en16931/`.
+- `Facturx.XSD.Cache` (supervised): compiles each bundled schema once and shares
+  it via `:persistent_term`, so validation runs in the caller process — in
+  parallel, ~0.6 ms/call (vs ~5 ms recompiling per call). Falls back to per-call
+  compilation in a short-lived task when no cached schema is available.
+
+### Security
+- XSD validation treats input as untrusted: a `<!DOCTYPE>` is rejected and
+  external entity/DTD fetching is disabled, preventing XXE and entity-expansion
+  ("billion laughs") attacks.
+
+### Notes
+- `:xmerl_xsd` is a partial XSD 1.0 implementation; it validates the CII EN 16931
+  schema well but is not a guarantee of full XSD 1.0 conformance. Business-rule
+  validation remains in `Facturx.Validate` (Schematron).
+
 ## [0.1.0] - 2026-07-24
 
 First public release. Pure-Elixir generation and extraction of Factur-X /

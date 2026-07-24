@@ -1,7 +1,7 @@
 defmodule Facturx.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.2.0"
   @source_url "https://github.com/nseaSeb/facturx"
 
   def project do
@@ -21,7 +21,10 @@ defmodule Facturx.MixProject do
 
   def application do
     [
-      extra_applications: [:logger]
+      # :xmerl (OTP) powers Facturx.XSD — pure-BEAM XSD validation, no external tool.
+      extra_applications: [:logger, :xmerl],
+      # Facturx.XSD.Cache compiles bundled schemas once and shares them.
+      mod: {Facturx.Application, []}
     ]
   end
 
