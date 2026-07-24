@@ -1,0 +1,17 @@
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+/config/*.secret.exs
+.elixir_ls/
+facturx-*.tar
+
+# Local, private fixtures (real invoices) — never commit
+/test/fixtures/local/
+
+# python dev venv
+/.venv-dev/

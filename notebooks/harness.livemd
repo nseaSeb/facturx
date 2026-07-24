@@ -1,0 +1,142 @@
+# Facturx — differential & conformance harness
+
+```elixir
+Mix.install([
+  {:facturx, path: Path.expand("..", __DIR__)},
+  {:req, "~> 0.5"},
+  {:kino, "~> 0.14"}
+])
+```
+
+## What this notebook proves
+
+Two complementary checks for a **drop-in replacement** of the Python
+`akretion/factur-x` library:
+
+1. **Conformance** — does a PDF pass **veraPDF** as valid PDF/A-3? (absolute ISO correctness)
+2. **Differential** — does our output match the **Python reference** semantically? (byte-identical embedded XML)
+
+Dev-only oracles; neither is a dependency of the library.
+
+> Run every cell **top to bottom**. If you edited this file on disk, reopen the
+> notebook — Livebook does not hot-reload external edits into an open session.
+
+## Setup: paths and a veraPDF helper
+
+```elixir
+root = Path.expand("..", __DIR__)
+h = Path.join(root, "test/fixtures/local/harness")
+
+paths = %{
+  verapdf: System.find_executable("verapdf") || "/opt/homebrew/bin/verapdf",
+  facturx_pdfgen: Path.join(root, ".venv-dev/bin/facturx-pdfgen"),
+  golden: Path.join(root, "test/fixtures/local/facturx-en16931.pdf"),
+  base: Path.join(h, "base.pdf"),
+  cii: Path.join(h, "cii.xml"),
+  ref: Path.join(h, "ref.pdf")
+}
+
+# Anonymous fn (not a module) so re-running the cell never warns about redefinition.
+verapdf = fn pdf, flavour ->
+  try do
+    {out, _} = System.cmd(paths.verapdf, ["-f", flavour, pdf], stderr_to_stdout: true)
+    grab = fn re -> (Regex.run(re, out) || [nil, nil]) |> List.last() end
+
+    %{
+      compliant: out =~ ~r/isCompliant="true"/,
+      passed: grab.(~r/passedRules="(\d+)"/),
+      failed: grab.(~r/failedRules="(\d+)"/)
+    }
+  rescue
+    e -> %{compliant: nil, passed: nil, failed: nil, error: Exception.message(e)}
+  end
+end
+
+# Show which inputs are present (this table is the cell result; `paths` stays a map).
+Kino.DataTable.new(for {k, v} <- paths, do: %{name: k, path: v, exists: File.exists?(v)})
+```
+
+## 1. Conformance of the known-good files
+
+```elixir
+[
+  {"base (Typst a-2b)", paths.base, "2b"},
+  {"golden (real Factur-X)", paths.golden, "3b"},
+  {"ref (Python, from our base)", paths.ref, "3b"}
+]
+|> Enum.map(fn {label, pdf, flavour} ->
+  result =
+    if File.exists?(pdf),
+      do: verapdf.(pdf, flavour),
+      else: %{compliant: nil, passed: nil, failed: nil}
+
+  Map.merge(%{file: label, flavour: flavour}, result)
+end)
+|> Kino.DataTable.new()
+```
+
+## 2. Regenerate the Python reference (base a-2b + cii.xml → ref.pdf)
+
+````elixir
+# facturx-pdfgen refuses to overwrite, so clear any previous run first.
+File.rm(paths.ref)
+
+{out, status} =
+  System.cmd(paths.facturx_pdfgen, [paths.base, paths.cii, paths.ref], stderr_to_stdout: true)
+
+Kino.Markdown.new("Exit `#{status}`\n\n```\n#{out}\n```")
+````
+
+## 3. Differential — our Extract vs the reference payload
+
+```elixir
+{:ok, from_ref} = Facturx.extract(File.read!(paths.ref))
+cii = File.read!(paths.cii)
+
+Kino.DataTable.new([
+  %{check: "filename", value: inspect(from_ref.filename)},
+  %{check: "profile", value: inspect(from_ref.profile)},
+  %{check: "xml == payload", value: from_ref.xml == cii},
+  %{
+    check: "detached (no refc leak)",
+    value: :binary.referenced_byte_size(from_ref.xml) == byte_size(from_ref.xml)
+  }
+])
+```
+
+## 4. Our Embed — conformance + differential vs Python
+
+```elixir
+base = File.read!(paths.base)
+cii = File.read!(paths.cii)
+
+{:ok, ours} = Facturx.generate(base, cii, profile: :en16931)
+ours_path = Path.join(h, "ours.pdf")
+File.write!(ours_path, ours)
+
+{:ok, from_ours} = Facturx.extract(ours)
+{:ok, from_ref} = Facturx.extract(File.read!(paths.ref))
+
+Kino.DataTable.new([
+  %{check: "ours: veraPDF 3b", value: inspect(verapdf.(ours_path, "3b"))},
+  %{check: "embedded XML == python", value: from_ours.xml == from_ref.xml},
+  %{check: "embedded XML == payload", value: from_ours.xml == cii}
+])
+```
+
+## 5. Bonus — build a Factur-X from a struct (pure Elixir)
+
+```elixir
+{:ok, invoice} = Facturx.parse(File.read!(paths.cii))
+{:ok, from_struct} = Facturx.generate(File.read!(paths.base), invoice, profile: :en16931)
+struct_path = Path.join(h, "from_struct.pdf")
+File.write!(struct_path, from_struct)
+
+{:ok, extracted} = Facturx.extract(from_struct)
+{:ok, reparsed} = Facturx.parse(extracted.xml)
+
+Kino.DataTable.new([
+  %{check: "struct round-trips (parse∘extract == invoice)", value: reparsed == invoice},
+  %{check: "from-struct veraPDF 3b", value: inspect(verapdf.(struct_path, "3b"))}
+])
+```
