@@ -3,6 +3,131 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.0] - 2026-07-30
+
+The French regulatory core, complete within the EN 16931 profile: **50/116 → 96/116**
+data items emitted. Additive throughout — new fields default to empty, so existing
+callers see byte-identical output.
+
+### Added
+- **Notes** (BG-1) — `Facturx.Invoice.notes`, a list of
+  `%{content: …, subject_code: …}` (BT-22 / BT-21). CII orders the content before
+  the code, the reverse of the BT numbering.
+- **Invoicing period** (BG-14) — `Facturx.Invoice.billing_period`, a
+  `%{start_date: …, end_date: …}` (BT-73 / BT-74). Either date may stand alone; an
+  empty map emits nothing.
+- **Gross price and price discount** (BT-148 / BT-147) — `:gross_price` and
+  `:price_discount` on a line. `BT-148` was the **only unconditional gap** left in
+  the regulatory core: mandatory inside `BG-29`, which is itself mandatory. A
+  discount without a gross price is dropped, the CII price container requiring an
+  amount.
+- **VAT exemption reason** (BT-120 / BT-121) — `:exemption_reason` and
+  `:exemption_reason_code` on a VAT breakdown entry. Note that `BR-E-01` also wants
+  a line in the matching exempt category; the XSD cannot see that, the schematron
+  can, and a test now pins it.
+
+- **Preceding invoice references** (BG-3) — `Facturx.Invoice.preceding_invoices`, a
+  list of `%{number: …, issue_date: …}` (BT-25 / BT-26). This is what a final
+  invoice points at to net off down payments already invoiced, so it goes with the
+  `B4`/`S4`/`M4` invoicing frameworks. Careful with BT-26: `FormattedIssueDateTime`
+  is a `qdt:FormattedDateTimeType`, so its child is `qdt:DateTimeString` — every
+  other date in the document is `udt:`. The reference block is also emitted *after*
+  the monetary summation, per `HeaderTradeSettlementType`.
+
+- **Allowances and charges** (BG-20 / BG-21 at document level, BG-27 / BG-28 on a
+  line) — `:allowances` and `:charges`, both on the invoice and on a line. All four
+  map to one CII element told apart by `ChargeIndicator`; which list you use decides
+  it, so there is no flag to get wrong. Each entry takes `:amount` (the only
+  required field), `:basis_amount`, `:percent`, `:vat_category`, `:vat_rate`,
+  `:reason` and `:reason_code`.
+- **The remaining document totals** — `:allowance_total` (BT-107),
+  `:charge_total` (BT-108), `:prepaid` (BT-113) and `:rounding` (BT-114) on
+  `:totals`. `:prepaid` is what down payments already covered, so it pairs with
+  `:preceding_invoices`.
+
+  ⚠️ Two things only the schematron enforces, and which the XSD accepts happily:
+  every allowance/charge needs a **`:reason` or `:reason_code`** (`BR-33`,
+  `BR-38`, `BR-42`, `BR-44`) — an amount alone gets the invoice rejected; and
+  document-level entries must **match their totals**, which feed
+  `:tax_basis_total` in turn (`BR-CO-11`, `BR-CO-12`, `BR-CO-13`). That arithmetic
+  is not computed for you.
+
+  Note the wire order, which does not follow the numbering: CII emits
+  `ChargeTotalAmount` **before** `AllowanceTotalAmount`, and
+  `TradeAllowanceChargeType` puts `ReasonCode` before `Reason`.
+
+- **Line invoicing period** (BG-26) — `:billing_period` on a line, same shape as
+  the document-level one (BT-134 / BT-135). Reuses the BG-14 emitter, the CII type
+  being identical; what needed care was its position, after the line's VAT and
+  before its allowances.
+
+  A note on `BR-FX-EN-04`, which lists BT-72, BG-14 and BG-26 and reads like a
+  general rule: it is not one. Its template only matches invoices whose seller
+  *and* buyer are in DE, so it never fires on a French invoice, and its assertion
+  is a conjunction — a line period satisfies the first half only, the second still
+  wanting BT-72 or a non-empty delivery container.
+- **The last five core items** — `:tax_representative` (BG-11, whose BT-63 VAT id is
+  the point), `:global_id` on a party (BT-29d, the SIREN of an *assujetti unique*,
+  scheme `0231`), the full delivery address (`:line_two`, `:line_three`,
+  `:country_subdivision` — BT-76 / BT-165 / BT-79), `:note` on a line (BT-127) and
+  `:tax_currency` + `:tax_total_in_tax_currency` (BT-6 / BT-111).
+
+  ⚠️ Two constraints the schematron caught and the XSD does not see:
+
+  - A **line note must not carry a subject code**. That is `EXT-FR-FE-183`, a French
+    extension on the target trajectory, not part of EN 16931 — emitting one gets the
+    invoice rejected. Hence `:note` on a line is a plain string, with no way to ask
+    for one.
+  - **`:tax_currency` must differ from `:currency`.** BT-110 and BT-111 are two
+    occurrences of the same element, told apart by their `currencyID`; identical
+    currencies make them indistinguishable and trip `BR-53`, cascading into
+    `BR-CO-15`.
+
+  Note also that the scheme defaults (`0002`, `0231`) are written into the XML, so
+  parsing a document built without them returns them anyway — the document is
+  unchanged, the struct normalised.
+
+- **Payment means** (BG-16) — `Facturx.Invoice.payment_means`, a list covering the
+  credited account (`:iban` / `:account_name` / `:account_id`, BT-84 / BT-85), its
+  institution (`:bic`, BT-86), a direct debit's debited account (`:payer_iban`,
+  BT-91) and card details (`:card_id` / `:cardholder_name`, BT-87 / BT-88), plus
+  BT-81 / BT-82. **Not** part of the regulatory Flux 1 set — the tax administration
+  does not need them — so they do not enter the 96/116 count; but an invoice without
+  payment details is unusable in practice.
+
+  ⚠️ `:card_id` must be **at most 10 characters** (rule `BR-51`, the PCI standard of
+  showing at most the first 6 and last 4 digits). A masked 16-character PAN like
+  `"************1234"` is *too long* and gets the invoice rejected. The XSD accepts
+  any length, so only the schematron catches it — pinned by a test.
+- **Rule G1.60 is now enforced**, alongside the G1.02 closed list and under the
+  same `:validate_business_process` opt-in. A `B4`/`S4`/`M4` framework means "final
+  invoice after a down payment", so it cannot be paired with a down-payment
+  `:type_code` (`386`, `500`, `503`); that returns
+  `{:error, {:final_invoice_type_conflict, %{business_process: …, type_code: …}}}`.
+  Being a cross-field constraint, **neither the XSD nor the EN 16931 schematron
+  sees it** — without the check, the first sign would be a platform refusing the
+  invoice. The legitimate combinations still pass: a down-payment invoice under a
+  standard framework (`S1` + `386`), and a final invoice with an ordinary type.
+
+Coverage of the regulatory Flux 1 data set goes from 50/116 to **96/116** — see
+`docs/reference/mapping-cii-flux1.md`.
+
+### Added (tooling)
+- `docker/` — a Saxon image for the bundled Schematron. It starts Saxon with
+  `--insecure` (required for the `document()` call that loads the code-list DB)
+  and bakes the DB in, so validation no longer fetches it over the network on
+  every call. Point `:codedb_url` at `file:///opt/facturx/FACTUR-X_EN16931_codedb.xml`.
+  Not shipped in the Hex package.
+- **Tests against the bundled EN 16931 Schematron**, over invoices the library
+  builds — until now the `:saxon` tests only exercised the HTTP transport with
+  toy stylesheets, so not a single business rule was covered. Notably, one test
+  pins that a BT-8 outside UNTDID 2475 is rejected *even though the XSD accepts
+  it*: that is the exact defect shipped in 0.3.0, which no automated check could
+  have caught.
+- A `schematron` CI job running those tests. It builds the image from the commit
+  under test rather than pulling a published one, so the ruleset always matches
+  the code and nothing is redistributed.
+
 ## [0.4.0] - 2026-07-30
 
 ### Fixed

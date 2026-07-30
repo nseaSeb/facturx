@@ -112,11 +112,14 @@ son garde-fou sans avoir à passer l'option partout. Le défaut « sûr » est c
 qui n'enferme personne ; c'est aussi le seul qui rende cette version réellement
 non cassante.
 
-En revanche la règle **G1.60** (un cadre `B4`/`S4`/`M4` interdit les `type_code`
-`386`/`500`/`503`) n'est **pas** implémentée : c'est une contrainte croisée entre
-deux champs, qui appellerait un module de règles de gestion — un chantier
-distinct, à ouvrir si le besoin se confirme. La liste fermée ne vaut donc pas
-conformité BT-23 complète, et c'est documenté comme tel.
+La règle **G1.60** (un cadre `B4`/`S4`/`M4` interdit les `type_code`
+`386`/`500`/`503`) suit le même régime, ajoutée une fois le workflow acompte
+devenu concret. Motif d'en faire une exception au principe « pas de contrainte
+croisée » : étant croisée précisément, **ni le XSD ni le Schematron EN 16931 ne la
+voient**, donc sans ce contrôle le premier signal serait un rejet de plateforme.
+
+Cela ne vaut toujours pas conformité BT-23 complète : les autres règles `BR-FR-*`
+restent absentes, faute d'artefact exploitable publié.
 
 ### 5. BT-8 est validé par défaut, avec échappatoire
 
@@ -132,9 +135,9 @@ pipeline `extract → parse → corriger → build` sur une facture reçue est u
 central, et bloquer sans recours y serait une impasse.
 
 Le XSD ne peut pas l'attraper (`qdt:TimeReferenceCodeType` est un `xs:token` sans
-énumération), et le Schematron n'est pas exécutable en CI puisqu'il exige un
-Saxon externe : sans ce contrôle en Elixir, une valeur erronée ne se révélerait
-qu'au rejet par la plateforme. Le cas est concret — les valeurs `3` / `35` / `432`
+énumération). Le Schematron, lui, la voit, et tourne désormais en CI via l'image
+de `docker/` — mais il exige un service externe, là où ce contrôle-ci est immédiat
+et sans dépendance. Le cas est concret — les valeurs `3` / `35` / `432`
 appartiennent au subset UNTDID **2005** de la syntaxe UBL et sont couramment
 citées à tort pour du CII.
 
@@ -156,26 +159,20 @@ défaut mais reste désactivable.
   éléments respecte les séquences du schéma. Une référence verte a été relevée
   sur `main` avant modification, afin qu'un échec ultérieur soit imputable.
 
-### Reste à faire (hors périmètre de ce jalon)
+### État du socle (mis à jour le 2026-07-30)
 
-Sur les 116 données réglementaires du Flux 1, 50 sont émises. L'[Annexe B](../reference/mapping-cii-flux1.md)
-détaille chaque cas ; par priorité :
+**96 / 116 données réglementaires émises** — le socle est couvert dans les limites
+du profil EN 16931. Détail en [Annexe B](../reference/mapping-cii-flux1.md).
 
-1. **`BT-148` (prix brut de l'article) — seul trou inconditionnel.** `1..1` dans
-   `BG-29` qui est `1..1` : toute facture avec des lignes devra le porter en
-   trajectoire CIBLE. Non bloquant au démarrage, et peu coûteux (en l'absence de
-   rabais `BT-147`, le prix brut égale le prix net déjà émis).
-2. **Blocs optionnels dont on voudra l'usage** — chacun impose son contenu
-   obligatoire : référence à une facture antérieure (`BG-3`, utile aux factures
-   d'acompte), notes (`BG-1`), période de facturation (`BG-14`), remises et
-   charges document (`BG-20`/`BG-21`) puis ligne (`BG-27`/`BG-28`), motif
-   d'exonération de TVA (`BT-120`/`BT-121`), représentant fiscal (`BG-11`),
-   assujetti unique (`BT-29d`), adresse de livraison complète
-   (`BT-76`/`BT-79`/`BT-165`).
-3. **Hors socle réglementaire mais fréquemment attendu** : moyens de paiement /
-   IBAN (`TradeSettlementPaymentMeansType` est dans le XSD embarqué, jamais émis).
+Les 20 restantes ne sont pas atteignables avec le schéma embarqué : 19 sont des
+extensions `EXT-FR-FE-*` (toutes de niveau ligne, toutes en trajectoire CIBLE), et
+la dernière est `BT-127-00`, le conteneur de note de ligne en `0..n` là où
+l'EN 16931 en autorise une seule.
 
-Puis, si le besoin apparaît : les `EXT-FR-FE-*` de niveau ligne (tous en
-trajectoire CIBLE) et les XSD Base/Full du PPF comme cibles de validation
-supplémentaires — en vérifiant au préalable les conditions de redistribution de
-ces artefacts, `priv/` étant embarqué dans le paquet Hex.
+Aller plus loin suppose donc d'embarquer les XSD `F1_FULL` du PPF et de valider
+contre eux — décision distincte, à prendre si la trajectoire CIBLE devient
+contraignante. À peser contre le poids de `priv/`, déjà ~90 % du paquet Hex, et
+contre les conditions de redistribution de ces artefacts.
+
+Hors socle réglementaire, `BG-16` (moyens de paiement) est fait : l'administration
+n'en a pas besoin, le client si.

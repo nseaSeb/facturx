@@ -21,14 +21,14 @@ defmodule Facturx.Validate do
 
   Only three assertions in the bundled schematron are flagged `warning`, and two
   are business rules rather than cosmetics: `PEPPOL-EN16931-R008` (no empty
-  elements), `BR-29` (BT-74 must be ≥ BT-73) and `BR-FX-EN-04` (a non-down-payment
-  invoice must carry BT-72, BG-14 or BG-26). So `{:ok, {:valid_with_warnings, _}}`
+  elements), `BR-29` (BT-74 must be ≥ BT-73) and `BR-FX-EN-04` (delivery or period
+  information, and only on DE-to-DE invoices). So `{:ok, {:valid_with_warnings, _}}`
   is not necessarily benign — inspect the findings.
 
   The common trigger is R008: with neither `:ship_to` nor `:delivery_date` set,
   `Facturx.CII` still has to emit an empty `ram:ApplicableHeaderTradeDelivery`,
-  which CII requires. Supply delivery data (which `BR-FX-EN-04` wants anyway) and
-  a plain `{:ok, :valid}` is the normal outcome.
+  which CII requires. Supply delivery data and a plain `{:ok, :valid}` is the
+  normal outcome.
 
   > Privacy: a **public** Saxon endpoint means sending real invoice data to a
   > third party. Self-host the Saxon server in production.

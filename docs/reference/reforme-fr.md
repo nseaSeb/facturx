@@ -64,8 +64,10 @@ code « biens et services » hors de la famille `M`.
 
 **Règle G1.60**, contrainte croisée avec BT-3 (type de facture) : un cadre `B4`,
 `S4` ou `M4` interdit les types `386` (facture d'acompte), `500` (facture
-d'acompte auto-facturée) et `503` (avoir de facture d'acompte). **Cette règle
-n'est pas implémentée par la lib** — voir [§4](#4-ce-que-la-lib-fait-et-ne-fait-pas).
+d'acompte auto-facturée) et `503` (avoir de facture d'acompte) — le cadre dit déjà
+« facture définitive après acompte », le document ne peut donc pas en être un.
+**Cette règle est appliquée** avec la liste fermée — voir
+[§4](#4-ce-que-la-lib-fait-et-ne-fait-pas).
 
 ## 3. BT-8 — Option pour le paiement de la TVA d'après les débits
 
@@ -204,14 +206,18 @@ Facturx.generate(pdf, invoice, validate_business_process: true)
 - `tax_due_date_type_code` est porté **au niveau facture**, pas par entrée de
   `tax_breakdown`, et recopié dans chaque `ram:ApplicableTradeTax` — ce qui
   satisfait S1.13 par construction.
-- **Non implémenté** : la règle **G1.60** (contrainte croisée BT-23 × BT-3). La
-  liste fermée ne vaut donc pas conformité BT-23 complète.
+- Activer le contrôle applique aussi **G1.60** : un cadre `B4`/`S4`/`M4` avec un
+  `type_code` `386`/`500`/`503` renvoie
+  `{:error, {:final_invoice_type_conflict, %{business_process: …, type_code: …}}}`.
+  Étant une contrainte croisée, ni le XSD ni le Schematron ne la voient.
+- Cela ne vaut pas pour autant conformité BT-23 complète : les autres règles
+  `BR-FR-*` restent absentes.
 - Aucune des deux données ne nécessite un nouveau schéma : elles sont déjà
   déclarées `minOccurs="0"` dans le XSD EN 16931 embarqué, donc
   `Facturx.validate_xsd/2` accepte la sortie enrichie.
 
 Pour l'état de couverture de l'ensemble des données réglementaires, voir
-l'[Annexe B](mapping-cii-flux1.md) (50 / 116 aujourd'hui).
+l'[Annexe B](mapping-cii-flux1.md) (96 / 116 aujourd'hui).
 
 ## 5. Affirmations courantes qui ne résistent pas à la source
 

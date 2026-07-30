@@ -35,6 +35,13 @@ defmodule Facturx.CII do
       whose values are not restricted (Peppol uses `urn:fdc:peppol.eu:…`, Chorus
       Pro used `A1`/`A2`).
 
+      Enabling it also enforces rule **G1.60**: a `B4`/`S4`/`M4` framework means
+      "final invoice after a down payment", so it cannot be paired with a
+      down-payment `:type_code` — `386`, `500` or `503`. That returns
+      `{:error, {:final_invoice_type_conflict, %{business_process: …, type_code: …}}}`.
+      Being a cross-field rule, neither the XSD nor the EN 16931 schematron sees
+      it.
+
     * `:validate_vat_point_date` — check BT-8 (`:tax_due_date_type_code`, or a
       per-entry `:due_date_type_code`) against `Facturx.vat_point_date_codes/0`,
       returning `{:error, {:invalid_vat_point_date_code, code}}`. **Defaults to
@@ -66,9 +73,12 @@ defmodule Facturx.CII do
 
   def build(%Invoice{} = inv, opts) do
     profile = Keyword.get(opts, :profile, inv.profile || :en16931)
+    check_bp? = validate_bp?(opts)
 
-    with :ok <- check_business_process(inv.business_process, validate_bp?(opts)),
-         :ok <- check_vat_point_dates(inv, flag?(opts, :validate_vat_point_date, true)) do
+    with :ok <- check_business_process(inv.business_process, check_bp?),
+         :ok <- check_final_invoice_type(inv, check_bp?),
+         :ok <- check_vat_point_dates(inv, flag?(opts, :validate_vat_point_date, true)),
+         :ok <- check_tax_currency(inv) do
       doc =
         {"rsm:CrossIndustryInvoice", @ns,
          [
@@ -117,6 +127,26 @@ defmodule Facturx.CII do
 
   defp check_business_process(code, _check?), do: {:error, {:invalid_business_process, code}}
 
+  # Rule G1.60. The B4/S4/M4 frameworks mean "final invoice after a down payment",
+  # so the document cannot itself be a down payment: 386 (down payment invoice),
+  # 500 (self-billed down payment invoice) or 503 (down payment credit note).
+  #
+  # Rides on :validate_business_process because it is French, like G1.02 — and it
+  # is worth having: being a cross-field constraint, neither the XSD nor the
+  # EN 16931 schematron catches it, so the first sign would be a platform refusing
+  # the invoice.
+  @final_invoice_frameworks ~w(B4 S4 M4)
+  @down_payment_type_codes ~w(386 500 503)
+
+  defp check_final_invoice_type(_inv, false), do: :ok
+
+  defp check_final_invoice_type(%Invoice{business_process: bp, type_code: type}, true)
+       when bp in @final_invoice_frameworks and type in @down_payment_type_codes do
+    {:error, {:final_invoice_type_conflict, %{business_process: bp, type_code: type}}}
+  end
+
+  defp check_final_invoice_type(_inv, _check?), do: :ok
+
   # BT-8 lives per VAT breakdown entry, so every emitted code is checked — the
   # document-level one and any per-entry override.
   defp check_vat_point_dates(inv, check?) do
@@ -152,6 +182,27 @@ defmodule Facturx.CII do
 
   defp check_vat_point_date(code, _check?), do: {:error, {:invalid_vat_point_date_code, code}}
 
+  # BT-110 and BT-111 are two occurrences of ram:TaxTotalAmount, told apart only by
+  # their currencyID. So BT-111 needs BT-6 (BR-53), and BT-6 must differ from the
+  # invoice currency — otherwise the two are indistinguishable and the schematron
+  # rejects the document. Without this check the first case crashed the encoder on a
+  # nil attribute, and the second built happily.
+  defp check_tax_currency(%Invoice{totals: totals, currency: currency, tax_currency: tax}) do
+    cond do
+      blank?(totals[:tax_total_in_tax_currency]) ->
+        :ok
+
+      blank?(tax) ->
+        {:error, {:tax_currency_missing, :tax_total_in_tax_currency}}
+
+      tax == currency ->
+        {:error, {:tax_currency_not_distinct, tax}}
+
+      true ->
+        :ok
+    end
+  end
+
   # BusinessProcess (BT-23) must precede Guideline (BT-24) per ExchangedDocumentContextType.
   defp context(inv, profile) do
     e("rsm:ExchangedDocumentContext", [
@@ -169,7 +220,17 @@ defmodule Facturx.CII do
     e("rsm:ExchangedDocument", [
       t("ram:ID", inv.number),
       t("ram:TypeCode", inv.type_code),
-      date_el("ram:IssueDateTime", inv.issue_date)
+      date_el("ram:IssueDateTime", inv.issue_date),
+      Enum.map(inv.notes, &note/1)
+    ])
+  end
+
+  # NoteType orders Content before SubjectCode — the reverse of the BT numbering
+  # (BT-22 then BT-21).
+  defp note(n) do
+    e("ram:IncludedNote", [
+      t("ram:Content", n[:content]),
+      t("ram:SubjectCode", n[:subject_code])
     ])
   end
 
@@ -187,21 +248,28 @@ defmodule Facturx.CII do
 
   defp line_item(line) do
     e("ram:IncludedSupplyChainTradeLineItem", [
-      e("ram:AssociatedDocumentLineDocument", [t("ram:LineID", line[:id])]),
+      e("ram:AssociatedDocumentLineDocument", [
+        t("ram:LineID", line[:id]),
+        # BT-127 — content only: EN 16931 does not allow ram:SubjectCode on a line
+        # note (that is EXT-FR-FE-183, a French extension), and emitting one gets
+        # the invoice rejected. One note only, this element not being unbounded.
+        wrap("ram:IncludedNote", t("ram:Content", line[:note]))
+      ]),
       e("ram:SpecifiedTradeProduct", [t("ram:Name", line[:name])]),
       e("ram:SpecifiedLineTradeAgreement", [
+        # GrossPrice precedes NetPrice in LineTradeAgreementType.
+        gross_price(line),
         e("ram:NetPriceProductTradePrice", [amount("ram:ChargeAmount", line[:net_price])])
       ]),
       e("ram:SpecifiedLineTradeDelivery", [
         qty("ram:BilledQuantity", line[:quantity], line[:unit])
       ]),
       e("ram:SpecifiedLineTradeSettlement", [
-        e("ram:ApplicableTradeTax", [
-          # Line-level trade tax is always VAT under EN 16931.
-          t("ram:TypeCode", "VAT"),
-          t("ram:CategoryCode", line[:vat_category]),
-          t("ram:RateApplicablePercent", decimal(line[:vat_rate]))
-        ]),
+        line_trade_tax(line),
+        # BG-26 — LineTradeSettlementType puts the period after the tax.
+        billing_period(line[:billing_period]),
+        # BG-27 / BG-28 — after the period, before the line summation.
+        allowances_and_charges(line),
         e("ram:SpecifiedTradeSettlementLineMonetarySummation", [
           amount("ram:LineTotalAmount", line[:line_total])
         ])
@@ -209,10 +277,46 @@ defmodule Facturx.CII do
     ])
   end
 
+  defp line_trade_tax(line) do
+    e("ram:ApplicableTradeTax", [
+      # Line-level trade tax is always VAT under EN 16931.
+      t("ram:TypeCode", "VAT"),
+      t("ram:CategoryCode", line[:vat_category]),
+      t("ram:RateApplicablePercent", decimal(line[:vat_rate]))
+    ])
+  end
+
+  # BT-148 / BT-147. TradePriceType requires ChargeAmount, so the container is only
+  # emitted when a gross price is given — a lone discount would be invalid.
+  defp gross_price(line) do
+    case line[:gross_price] do
+      nil ->
+        nil
+
+      gross ->
+        e("ram:GrossPriceProductTradePrice", [
+          amount("ram:ChargeAmount", gross),
+          price_discount(line[:price_discount])
+        ])
+    end
+  end
+
+  defp price_discount(nil), do: nil
+
+  defp price_discount(value) do
+    e("ram:AppliedTradeAllowanceCharge", [
+      # false = allowance (a discount) rather than a charge.
+      wrap("ram:ChargeIndicator", t("udt:Indicator", "false")),
+      amount("ram:ActualAmount", value)
+    ])
+  end
+
   defp header_agreement(inv) do
     e("ram:ApplicableHeaderTradeAgreement", [
       party("ram:SellerTradeParty", inv.seller),
-      party("ram:BuyerTradeParty", inv.buyer)
+      party("ram:BuyerTradeParty", inv.buyer),
+      # BG-11 — follows the buyer in HeaderTradeAgreementType.
+      party("ram:SellerTaxRepresentativeTradeParty", inv.tax_representative)
     ])
   end
 
@@ -226,13 +330,99 @@ defmodule Facturx.CII do
   defp header_settlement(inv) do
     e(
       "ram:ApplicableHeaderTradeSettlement",
-      [t("ram:InvoiceCurrencyCode", inv.currency)] ++
+      # InvoiceReferencedDocument comes *after* the summation in
+      # HeaderTradeSettlementType, counter-intuitive as that reads.
+      # PaymentMeans precedes ApplicableTradeTax in HeaderTradeSettlementType.
+      # SpecifiedTradeAllowanceCharge sits between the period and the terms.
+      [
+        # BT-6 precedes InvoiceCurrencyCode in HeaderTradeSettlementType.
+        t("ram:TaxCurrencyCode", inv.tax_currency),
+        t("ram:InvoiceCurrencyCode", inv.currency)
+      ] ++
+        Enum.map(inv.payment_means, &payment_means/1) ++
         Enum.map(inv.tax_breakdown, &trade_tax(&1, inv.tax_due_date_type_code)) ++
         [
+          # BillingSpecifiedPeriod sits between ApplicableTradeTax and
+          # SpecifiedTradePaymentTerms in HeaderTradeSettlementType.
+          billing_period(inv.billing_period)
+        ] ++
+        allowances_and_charges(Map.from_struct(inv)) ++
+        [
           payment_terms(inv.due_date),
-          monetary_summation(inv.totals, inv.currency)
-        ]
+          monetary_summation(inv.totals, inv.currency, inv.tax_currency)
+        ] ++
+        Enum.map(inv.preceding_invoices, &preceding_invoice/1)
     )
+  end
+
+  # BG-3 (BT-25 / BT-26).
+  defp preceding_invoice(ref) do
+    e("ram:InvoiceReferencedDocument", [
+      t("ram:IssuerAssignedID", ref[:number]),
+      # FormattedIssueDateTime is qdt:FormattedDateTimeType, so its child lives in
+      # the qdt namespace — unlike every other date in this document, which is udt.
+      qdt_date_el("ram:FormattedIssueDateTime", ref[:issue_date])
+    ])
+  end
+
+  # BG-14 (BT-73 / BT-74).
+  defp billing_period(nil), do: nil
+
+  defp billing_period(period) do
+    maybe("ram:BillingSpecifiedPeriod", [
+      date_el("ram:StartDateTime", period[:start_date]),
+      date_el("ram:EndDateTime", period[:end_date])
+    ])
+  end
+
+  # BG-20/BG-21 at document level, BG-27/BG-28 on a line — one CII element for all
+  # four, told apart by ChargeIndicator. Order follows TradeAllowanceChargeType, in
+  # which ReasonCode precedes Reason (the reverse of the BT numbering).
+  defp allowance_charge(ac, charge?) do
+    e("ram:SpecifiedTradeAllowanceCharge", [
+      wrap("ram:ChargeIndicator", t("udt:Indicator", to_string(charge?))),
+      t("ram:CalculationPercent", decimal(ac[:percent])),
+      amount("ram:BasisAmount", ac[:basis_amount]),
+      amount("ram:ActualAmount", ac[:amount]),
+      t("ram:ReasonCode", ac[:reason_code]),
+      t("ram:Reason", ac[:reason]),
+      # CategoryTradeTax is a TradeTaxType, so TypeCode / CategoryCode / rate.
+      maybe("ram:CategoryTradeTax", [
+        t("ram:TypeCode", (ac[:vat_category] || ac[:vat_rate]) && "VAT"),
+        t("ram:CategoryCode", ac[:vat_category]),
+        t("ram:RateApplicablePercent", decimal(ac[:vat_rate]))
+      ])
+    ])
+  end
+
+  defp allowances_and_charges(container) do
+    Enum.map(container[:allowances] || [], &allowance_charge(&1, false)) ++
+      Enum.map(container[:charges] || [], &allowance_charge(&1, true))
+  end
+
+  # BG-16 (BT-81 / BT-82) with its account and institution sub-blocks. Order follows
+  # TradeSettlementPaymentMeansType: code, information, card, debited account,
+  # credited account, institution.
+  defp payment_means(pm) do
+    e("ram:SpecifiedTradeSettlementPaymentMeans", [
+      t("ram:TypeCode", pm[:type_code]),
+      t("ram:Information", pm[:information]),
+      # BG-18 — ID is required by the schema, so the card block needs it.
+      maybe("ram:ApplicableTradeSettlementFinancialCard", [
+        t("ram:ID", pm[:card_id]),
+        t("ram:CardholderName", pm[:cardholder_name])
+      ]),
+      # BG-19 (BT-91) — DebtorFinancialAccountType requires IBANID.
+      wrap("ram:PayerPartyDebtorFinancialAccount", t("ram:IBANID", pm[:payer_iban])),
+      # BG-17 (BT-84 / BT-85) — every child optional, hence maybe/2.
+      maybe("ram:PayeePartyCreditorFinancialAccount", [
+        t("ram:IBANID", pm[:iban]),
+        t("ram:AccountName", pm[:account_name]),
+        t("ram:ProprietaryID", pm[:account_id])
+      ]),
+      # BT-86 — CreditorFinancialInstitutionType requires BICID.
+      wrap("ram:PayeeSpecifiedCreditorFinancialInstitution", t("ram:BICID", pm[:bic]))
+    ])
   end
 
   # BT-8: the entry's own code wins, else the document-level one (rule S1.13 makes
@@ -242,8 +432,12 @@ defmodule Facturx.CII do
     e("ram:ApplicableTradeTax", [
       amount("ram:CalculatedAmount", tax[:calculated]),
       t("ram:TypeCode", tax[:type] || "VAT"),
+      # BT-120 and BT-121 are not adjacent in TradeTaxType: the reason comes before
+      # BasisAmount, the code after CategoryCode.
+      t("ram:ExemptionReason", tax[:exemption_reason]),
       amount("ram:BasisAmount", tax[:basis]),
       t("ram:CategoryCode", tax[:category]),
+      t("ram:ExemptionReasonCode", tax[:exemption_reason_code]),
       t("ram:DueDateTypeCode", tax[:due_date_type_code] || doc_code),
       t("ram:RateApplicablePercent", decimal(tax[:rate]))
     ])
@@ -255,12 +449,20 @@ defmodule Facturx.CII do
     e("ram:SpecifiedTradePaymentTerms", [date_el("ram:DueDateDateTime", due)])
   end
 
-  defp monetary_summation(totals, currency) do
+  # Wire order does not follow the BT numbering: ChargeTotalAmount comes *before*
+  # AllowanceTotalAmount, though BT-107 (allowances) precedes BT-108 (charges).
+  defp monetary_summation(totals, currency, tax_currency) do
     e("ram:SpecifiedTradeSettlementHeaderMonetarySummation", [
       amount("ram:LineTotalAmount", totals[:line_total]),
+      amount("ram:ChargeTotalAmount", totals[:charge_total]),
+      amount("ram:AllowanceTotalAmount", totals[:allowance_total]),
       amount("ram:TaxBasisTotalAmount", totals[:tax_basis_total]),
       amount("ram:TaxTotalAmount", totals[:tax_total], currency),
+      # BT-111 is the second TaxTotalAmount (maxOccurs=2), in the accounting currency.
+      amount("ram:TaxTotalAmount", totals[:tax_total_in_tax_currency], tax_currency),
+      amount("ram:RoundingAmount", totals[:rounding]),
       amount("ram:GrandTotalAmount", totals[:grand_total]),
+      amount("ram:TotalPrepaidAmount", totals[:prepaid]),
       amount("ram:DuePayableAmount", totals[:due_payable])
     ])
   end
@@ -269,6 +471,11 @@ defmodule Facturx.CII do
 
   defp party(tag, p) do
     e(tag, [
+      # GlobalID precedes Name in TradePartyType. The 0231 default (SIREN of an
+      # assujetti unique) is BT-29d, which the annexe puts on the seller alone —
+      # applying it everywhere would mislabel, say, a buyer's GLN as a French VAT
+      # group id.
+      id_el_named("ram:GlobalID", p[:global_id], p[:global_scheme] || default_global_scheme(tag)),
       t("ram:Name", p[:name]),
       legal_org(p),
       contact(p[:contact]),
@@ -300,8 +507,12 @@ defmodule Facturx.CII do
     e("ram:PostalTradeAddress", [
       t("ram:PostcodeCode", a[:postcode]),
       t("ram:LineOne", a[:line_one]),
+      t("ram:LineTwo", a[:line_two]),
+      t("ram:LineThree", a[:line_three]),
       t("ram:CityName", a[:city]),
-      t("ram:CountryID", a[:country])
+      t("ram:CountryID", a[:country]),
+      # CountrySubDivisionName follows CountryID, not the city.
+      t("ram:CountrySubDivisionName", a[:country_subdivision])
     ])
   end
 
@@ -318,8 +529,28 @@ defmodule Facturx.CII do
 
   defp e(name, children), do: {name, [], compact(children)}
 
+  # Like e/2 but drops the wrapper too when nothing survives, for containers whose
+  # children are all optional — an empty one would trip PEPPOL-EN16931-R008.
+  defp maybe(name, children) do
+    case compact(children) do
+      [] -> nil
+      kids -> {name, [], kids}
+    end
+  end
+
   defp t(_name, value) when value in [nil, ""], do: nil
   defp t(name, value), do: {name, [], [to_string(value)]}
+
+  defp default_global_scheme("ram:SellerTradeParty"), do: "0231"
+  defp default_global_scheme(_tag), do: nil
+
+  defp id_el_named(_name, nil, _scheme), do: nil
+  defp id_el_named(name, value, nil), do: {name, [], [to_string(value)]}
+
+  defp id_el_named(name, value, scheme),
+    do: {name, [], [to_string(value)]} |> put_scheme(scheme)
+
+  defp put_scheme({name, _attrs, kids}, scheme), do: {name, [{"schemeID", scheme}], kids}
 
   defp id_el(nil, _scheme), do: nil
   defp id_el(value, scheme), do: {"ram:ID", [{"schemeID", scheme}], [to_string(value)]}
@@ -336,6 +567,13 @@ defmodule Facturx.CII do
 
   defp date_el(name, %Date{} = d) do
     {name, [], [{"udt:DateTimeString", [{"format", "102"}], [Calendar.strftime(d, "%Y%m%d")]}]}
+  end
+
+  # Same shape, qdt namespace: only qdt:FormattedDateTimeType wrappers take this.
+  defp qdt_date_el(_name, nil), do: nil
+
+  defp qdt_date_el(name, %Date{} = d) do
+    {name, [], [{"qdt:DateTimeString", [{"format", "102"}], [Calendar.strftime(d, "%Y%m%d")]}]}
   end
 
   # Wrap a single (possibly nil) child, dropping the wrapper if the child is nil.
@@ -367,6 +605,9 @@ defmodule Facturx.CII do
     delivery = find(tx, "ram:ApplicableHeaderTradeDelivery")
     settlement = find(tx, "ram:ApplicableHeaderTradeSettlement")
     summation = find(settlement, "ram:SpecifiedTradeSettlementHeaderMonetarySummation")
+    # Read once: the totals need them to tell BT-110 from BT-111.
+    invoice_currency = path_text(settlement, ["ram:InvoiceCurrencyCode"]) || "EUR"
+    tax_currency = path_text(settlement, ["ram:TaxCurrencyCode"])
 
     %Invoice{
       profile:
@@ -383,13 +624,19 @@ defmodule Facturx.CII do
           "ram:BusinessProcessSpecifiedDocumentContextParameter",
           "ram:ID"
         ]),
+      notes:
+        root
+        |> find("rsm:ExchangedDocument")
+        |> find_all("ram:IncludedNote")
+        |> Enum.map(&parse_note/1),
       number: path_text(root, ["rsm:ExchangedDocument", "ram:ID"]),
       type_code: path_text(root, ["rsm:ExchangedDocument", "ram:TypeCode"]) || "380",
       issue_date:
         parse_date(
           path_text(root, ["rsm:ExchangedDocument", "ram:IssueDateTime", "udt:DateTimeString"])
         ),
-      currency: path_text(settlement, ["ram:InvoiceCurrencyCode"]) || "EUR",
+      currency: invoice_currency,
+      tax_currency: tax_currency,
       due_date:
         parse_date(
           path_text(settlement, [
@@ -406,11 +653,23 @@ defmodule Facturx.CII do
             "udt:DateTimeString"
           ])
         ),
+      billing_period: parse_period(find(settlement, "ram:BillingSpecifiedPeriod")),
+      preceding_invoices:
+        settlement
+        |> find_all("ram:InvoiceReferencedDocument")
+        |> Enum.map(&parse_preceding_invoice/1),
+      payment_means:
+        settlement
+        |> find_all("ram:SpecifiedTradeSettlementPaymentMeans")
+        |> Enum.map(&parse_payment_means/1),
+      allowances: elem(parse_allowances_and_charges(settlement), 0),
+      charges: elem(parse_allowances_and_charges(settlement), 1),
       seller: parse_party(find(agreement, "ram:SellerTradeParty")),
       buyer: parse_party(find(agreement, "ram:BuyerTradeParty")),
+      tax_representative: parse_party(find(agreement, "ram:SellerTaxRepresentativeTradeParty")),
       ship_to: parse_party(find(delivery, "ram:ShipToTradeParty")),
       lines: tx |> find_all("ram:IncludedSupplyChainTradeLineItem") |> Enum.map(&parse_line/1),
-      totals: parse_totals(summation)
+      totals: parse_totals(summation, invoice_currency, tax_currency)
     }
     |> put_tax_breakdown(settlement)
   end
@@ -444,6 +703,12 @@ defmodule Facturx.CII do
 
     prune(%{
       id: path_text(li, ["ram:AssociatedDocumentLineDocument", "ram:LineID"]),
+      note:
+        path_text(li, [
+          "ram:AssociatedDocumentLineDocument",
+          "ram:IncludedNote",
+          "ram:Content"
+        ]),
       name: path_text(li, ["ram:SpecifiedTradeProduct", "ram:Name"]),
       net_price:
         num(
@@ -451,6 +716,23 @@ defmodule Facturx.CII do
             "ram:SpecifiedLineTradeAgreement",
             "ram:NetPriceProductTradePrice",
             "ram:ChargeAmount"
+          ])
+        ),
+      gross_price:
+        num(
+          path_text(li, [
+            "ram:SpecifiedLineTradeAgreement",
+            "ram:GrossPriceProductTradePrice",
+            "ram:ChargeAmount"
+          ])
+        ),
+      price_discount:
+        num(
+          path_text(li, [
+            "ram:SpecifiedLineTradeAgreement",
+            "ram:GrossPriceProductTradePrice",
+            "ram:AppliedTradeAllowanceCharge",
+            "ram:ActualAmount"
           ])
         ),
       quantity: num(node_text(qty_node)),
@@ -464,8 +746,24 @@ defmodule Facturx.CII do
             "ram:SpecifiedTradeSettlementLineMonetarySummation",
             "ram:LineTotalAmount"
           ])
-        )
+        ),
+      allowances: line_allowances(li, 0),
+      charges: line_allowances(li, 1),
+      billing_period:
+        parse_period(path(li, ["ram:SpecifiedLineTradeSettlement", "ram:BillingSpecifiedPeriod"]))
     })
+  end
+
+  # prune/1 drops nil, not [], so keep empty lists out of the map to preserve the
+  # round-trip against a line that never mentioned them.
+  defp line_allowances(li, index) do
+    case li
+         |> find("ram:SpecifiedLineTradeSettlement")
+         |> parse_allowances_and_charges()
+         |> elem(index) do
+      [] -> nil
+      list -> list
+    end
   end
 
   defp parse_tax(tt) do
@@ -475,8 +773,78 @@ defmodule Facturx.CII do
       rate: num(child_text(tt, "ram:RateApplicablePercent")),
       basis: num(child_text(tt, "ram:BasisAmount")),
       calculated: num(child_text(tt, "ram:CalculatedAmount")),
-      due_date_type_code: child_text(tt, "ram:DueDateTypeCode")
+      due_date_type_code: child_text(tt, "ram:DueDateTypeCode"),
+      exemption_reason: child_text(tt, "ram:ExemptionReason"),
+      exemption_reason_code: child_text(tt, "ram:ExemptionReasonCode")
     })
+  end
+
+  # Splits one CII element back into the two lists, on ChargeIndicator.
+  defp parse_allowances_and_charges(container) do
+    {charges, allowances} =
+      container
+      |> find_all("ram:SpecifiedTradeAllowanceCharge")
+      |> Enum.split_with(&(path_text(&1, ["ram:ChargeIndicator", "udt:Indicator"]) == "true"))
+
+    {Enum.map(allowances, &parse_allowance_charge/1),
+     Enum.map(charges, &parse_allowance_charge/1)}
+  end
+
+  defp parse_allowance_charge(ac) do
+    tax = find(ac, "ram:CategoryTradeTax")
+
+    prune(%{
+      percent: num(child_text(ac, "ram:CalculationPercent")),
+      basis_amount: num(child_text(ac, "ram:BasisAmount")),
+      amount: num(child_text(ac, "ram:ActualAmount")),
+      reason_code: child_text(ac, "ram:ReasonCode"),
+      reason: child_text(ac, "ram:Reason"),
+      vat_category: child_text(tax, "ram:CategoryCode"),
+      vat_rate: num(child_text(tax, "ram:RateApplicablePercent"))
+    })
+  end
+
+  defp parse_payment_means(pm) do
+    card = find(pm, "ram:ApplicableTradeSettlementFinancialCard")
+    creditor = find(pm, "ram:PayeePartyCreditorFinancialAccount")
+
+    prune(%{
+      type_code: child_text(pm, "ram:TypeCode"),
+      information: child_text(pm, "ram:Information"),
+      card_id: child_text(card, "ram:ID"),
+      cardholder_name: child_text(card, "ram:CardholderName"),
+      payer_iban: path_text(pm, ["ram:PayerPartyDebtorFinancialAccount", "ram:IBANID"]),
+      iban: child_text(creditor, "ram:IBANID"),
+      account_name: child_text(creditor, "ram:AccountName"),
+      account_id: child_text(creditor, "ram:ProprietaryID"),
+      bic: path_text(pm, ["ram:PayeeSpecifiedCreditorFinancialInstitution", "ram:BICID"])
+    })
+  end
+
+  defp parse_preceding_invoice(ref) do
+    prune(%{
+      number: child_text(ref, "ram:IssuerAssignedID"),
+      issue_date: parse_date(path_text(ref, ["ram:FormattedIssueDateTime", "qdt:DateTimeString"]))
+    })
+  end
+
+  defp parse_note(n) do
+    prune(%{
+      content: child_text(n, "ram:Content"),
+      subject_code: child_text(n, "ram:SubjectCode")
+    })
+  end
+
+  defp parse_period(nil), do: nil
+
+  defp parse_period(p) do
+    case prune(%{
+           start_date: parse_date(path_text(p, ["ram:StartDateTime", "udt:DateTimeString"])),
+           end_date: parse_date(path_text(p, ["ram:EndDateTime", "udt:DateTimeString"]))
+         }) do
+      empty when empty == %{} -> nil
+      period -> period
+    end
   end
 
   defp parse_party(nil), do: nil
@@ -484,6 +852,8 @@ defmodule Facturx.CII do
   defp parse_party(p) do
     prune(%{
       name: child_text(p, "ram:Name"),
+      global_id: child_text(p, "ram:GlobalID"),
+      global_scheme: attr(find(p, "ram:GlobalID"), "schemeID"),
       legal_id: path_text(p, ["ram:SpecifiedLegalOrganization", "ram:ID"]),
       legal_scheme: attr(path(p, ["ram:SpecifiedLegalOrganization", "ram:ID"]), "schemeID"),
       vat: path_text(p, ["ram:SpecifiedTaxRegistration", "ram:ID"]),
@@ -498,8 +868,11 @@ defmodule Facturx.CII do
     prune(%{
       postcode: child_text(a, "ram:PostcodeCode"),
       line_one: child_text(a, "ram:LineOne"),
+      line_two: child_text(a, "ram:LineTwo"),
+      line_three: child_text(a, "ram:LineThree"),
       city: child_text(a, "ram:CityName"),
-      country: child_text(a, "ram:CountryID")
+      country: child_text(a, "ram:CountryID"),
+      country_subdivision: child_text(a, "ram:CountrySubDivisionName")
     })
   end
 
@@ -513,14 +886,42 @@ defmodule Facturx.CII do
     })
   end
 
-  defp parse_totals(nil), do: %{}
+  # BT-110: the one in the invoice currency, else an unlabelled one. Never falls
+  # back to "the first", which would claim BT-111 when only that is present.
+  defp tax_total(ms, currency) do
+    totals = find_all(ms, "ram:TaxTotalAmount")
 
-  defp parse_totals(ms) do
+    (Enum.find(totals, &(attr(&1, "currencyID") == currency)) ||
+       Enum.find(totals, &(attr(&1, "currencyID") == nil)))
+    |> node_text()
+  end
+
+  # BT-111: only ever the one in the accounting currency, and only if there is one.
+  defp tax_total_in_tax_currency(_ms, nil), do: nil
+
+  defp tax_total_in_tax_currency(ms, tax_currency) do
+    ms
+    |> find_all("ram:TaxTotalAmount")
+    |> Enum.find(&(attr(&1, "currencyID") == tax_currency))
+    |> node_text()
+  end
+
+  defp parse_totals(nil, _currency, _tax_currency), do: %{}
+
+  defp parse_totals(ms, currency, tax_currency) do
     prune(%{
       line_total: num(child_text(ms, "ram:LineTotalAmount")),
+      charge_total: num(child_text(ms, "ram:ChargeTotalAmount")),
+      allowance_total: num(child_text(ms, "ram:AllowanceTotalAmount")),
       tax_basis_total: num(child_text(ms, "ram:TaxBasisTotalAmount")),
-      tax_total: num(child_text(ms, "ram:TaxTotalAmount")),
+      tax_total: num(tax_total(ms, currency)),
+      # BT-111 shares BT-110's element name; only @currencyID tells them apart, so
+      # a conformant producer emitting the accounting-currency total first must not
+      # end up swapping the two.
+      tax_total_in_tax_currency: num(tax_total_in_tax_currency(ms, tax_currency)),
+      rounding: num(child_text(ms, "ram:RoundingAmount")),
       grand_total: num(child_text(ms, "ram:GrandTotalAmount")),
+      prepaid: num(child_text(ms, "ram:TotalPrepaidAmount")),
       due_payable: num(child_text(ms, "ram:DuePayableAmount"))
     })
   end
