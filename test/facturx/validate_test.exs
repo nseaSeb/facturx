@@ -26,14 +26,66 @@ defmodule Facturx.ValidateTest do
                %{
                  message: "[BR-01] An Invoice shall have a number.",
                  location: "/rsm:CrossIndustryInvoice",
-                 test: "exists(ram:ID)"
+                 test: "exists(ram:ID)",
+                 flag: nil
                },
-               %{message: "A warning fired.", location: "/y", test: "warn"}
+               # no flag means error, not warning — defaulting to "invalid" is the
+               # safe way round
+               %{message: "A warning fired.", location: "/y", test: "warn", flag: nil}
              ]
     end
 
     test "errors on malformed SVRL" do
       assert {:error, {:invalid_svrl, _}} = Facturx.Validate.interpret("<not-closed>")
+    end
+  end
+
+  # Severity comes from the SVRL `flag` attribute. Getting this wrong made
+  # validate/2 report every conformant invoice as invalid, since the EN 16931
+  # schematron always warns about the empty ram:ApplicableHeaderTradeDelivery
+  # that CII requires.
+  describe "interpret/1 severity handling" do
+    defp svrl(assertions) do
+      """
+      <svrl:schematron-output xmlns:svrl="http://purl.oclc.org/dsdl/svrl">
+        #{assertions}
+      </svrl:schematron-output>
+      """
+    end
+
+    @r008 ~s|<svrl:failed-assert test="false" flag="warning" location="/a">| <>
+            ~s|<svrl:text>[PEPPOL-EN16931-R008]-Document MUST not contain empty elements.</svrl:text>| <>
+            ~s|</svrl:failed-assert>|
+
+    @br01 ~s|<svrl:failed-assert test="exists(ram:ID)" location="/b">| <>
+            ~s|<svrl:text>[BR-01] An Invoice shall have a number.</svrl:text>| <>
+            ~s|</svrl:failed-assert>|
+
+    test "warnings alone leave the document valid" do
+      assert {:ok, {:valid_with_warnings, [w]}} = Facturx.Validate.interpret(svrl(@r008))
+      assert w.flag == "warning"
+      assert w.message =~ "R008"
+    end
+
+    test "info is non-blocking too" do
+      info =
+        ~s|<svrl:successful-report test="t" flag="info"><svrl:text>fyi</svrl:text></svrl:successful-report>|
+
+      assert {:ok, {:valid_with_warnings, [%{flag: "info"}]}} =
+               Facturx.Validate.interpret(svrl(info))
+    end
+
+    test "one error makes the document invalid, and warnings are not reported as errors" do
+      assert {:error, {:invalid, errors}} = Facturx.Validate.interpret(svrl(@r008 <> @br01))
+      assert [%{message: msg, flag: nil}] = errors
+      assert msg =~ "BR-01"
+    end
+
+    test "an unknown flag counts as an error" do
+      fatal =
+        ~s|<svrl:failed-assert test="t" flag="fatal"><svrl:text>boom</svrl:text></svrl:failed-assert>|
+
+      assert {:error, {:invalid, [%{flag: "fatal"}]}} = Facturx.Validate.interpret(svrl(fatal))
     end
   end
 

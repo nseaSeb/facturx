@@ -51,8 +51,7 @@ Reproduced verbatim from the UN/CEFACT `CrossIndustryInvoice` schema modules
 
 Copyright (c) 2016-2023, Alexis de Lattre — **BSD-3-Clause**. The full licence
 text, including the list of conditions and the disclaimer its redistribution
-clause requires, is bundled verbatim as
-[`priv/schematron/LICENSE.akretion.txt`](schematron/LICENSE.akretion.txt).
+clause requires, is bundled verbatim as `priv/schematron/LICENSE.akretion.txt`.
 
 ---
 

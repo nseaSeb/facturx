@@ -45,7 +45,7 @@ Python library does):
 ```elixir
 def deps do
   [
-    {:facturx, "~> 0.3"},
+    {:facturx, "~> 0.4"},
     # only if you use Facturx.validate/2:
     {:req, "~> 0.5"}
   ]
@@ -189,7 +189,28 @@ Schematron (EN 16931 business rules) — needs a reachable Saxon server
 (see `Facturx.Validate`):
 
 ```elixir
-{:ok, :valid} = Facturx.validate(xml, endpoint: "http://localhost:5000/transform")
+case Facturx.validate(xml, endpoint: "http://localhost:5000/transform") do
+  {:ok, :valid} -> :ok
+  {:ok, {:valid_with_warnings, findings}} -> inspect_warnings(findings)
+  {:error, {:invalid, errors}} -> reject(errors)
+end
+```
+
+Findings are split by SVRL severity: only `"warning"` and `"info"` are
+non-blocking. Don't read `:valid_with_warnings` as harmless — of the three
+assertions the bundled schematron flags as warnings, two are business rules:
+`BR-29` (BT-74 ≥ BT-73) and `BR-FX-EN-04` (a non-down-payment invoice must carry
+BT-72, BG-14 or BG-26). Only `PEPPOL-EN16931-R008` (no empty elements) is
+cosmetic, and it fires when neither `:ship_to` nor `:delivery_date` is set, since
+CII still requires the `ram:ApplicableHeaderTradeDelivery` container.
+
+The bundled rules load their code-list DB through `document()`, which Saxon
+refuses unless started with `--insecure`. Note that the image's `CMD` has to be
+rebuilt, not appended to:
+
+```sh
+docker run -d --rm -p 5000:5000 ghcr.io/willemvlh/saxon-server \
+  /bin/sh -c 'java $JAVA_OPTS -jar app.jar --insecure'
 ```
 
 ## License

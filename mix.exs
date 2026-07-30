@@ -1,7 +1,7 @@
 defmodule Facturx.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.4.0"
   @source_url "https://github.com/nseaSeb/facturx"
 
   def project do
@@ -67,11 +67,15 @@ defmodule Facturx.MixProject do
         "docs/reference/reforme-fr.md",
         "docs/reference/mapping-cii-flux1.md",
         "docs/adr/0001-perimetre-et-architecture.md",
-        "docs/adr/0002-conformite-reforme-fr.md"
+        "docs/adr/0002-conformite-reforme-fr.md",
+        # Declared so the README's links to them resolve in the docs.
+        "priv/NOTICE.md": [title: "Third-party notices"],
+        LICENSE: [title: "License"]
       ],
       groups_for_extras: [
         Référence: ~r/docs\/reference\//,
-        "Décisions d'architecture": ~r/docs\/adr\//
+        "Décisions d'architecture": ~r/docs\/adr\//,
+        Licences: ~r/(LICENSE|NOTICE)/
       ]
     ]
   end

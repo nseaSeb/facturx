@@ -3,6 +3,63 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0] - 2026-07-30
+
+### Fixed
+- **`validate/2` reported every conformant invoice as invalid.** SVRL findings
+  were collected without looking at their severity, so a single `flag="warning"`
+  produced `{:error, {:invalid, …}}`. The EN 16931 schematron flags
+  `PEPPOL-EN16931-R008` ("no empty elements") as a warning, and CII *requires*
+  `ram:ApplicableHeaderTradeDelivery` even when there is no delivery data — so any
+  invoice built without `:ship_to` or `:delivery_date` tripped it and could never
+  come back valid. Warnings also drowned out real errors in the same list.
+
+### Changed (breaking)
+- `Facturx.validate/2` gains a third return shape, for documents that are valid
+  but carried non-blocking findings:
+
+  ```elixir
+  {:ok, :valid}
+  {:ok, {:valid_with_warnings, findings}}   # new
+  {:error, {:invalid, errors}}
+  ```
+
+  Callers matching on the previous two shapes must handle the new one.
+
+  ⚠️ **Read this before upgrading.** The break has a quiet half. Code matching the
+  old shapes raises a `MatchError` and fails loudly, which is fine — but code
+  written as `with {:ok, _} <- Facturx.validate(xml)` or
+  `match?({:ok, _}, Facturx.validate(xml))` does **not** fail. It silently starts
+  accepting invoices that 0.3.0 rejected, because `{:ok, _}` can now carry failed
+  assertions. Three rules are affected — every assertion the bundled schematron
+  flags as `warning` — and two of them are substantive, not cosmetic:
+
+  | Rule | What it checks | Nature |
+  |---|---|---|
+  | `PEPPOL-EN16931-R008` | document must not contain empty elements | cosmetic |
+  | `BR-29` | if BT-73 and BT-74 are both given, BT-74 must be ≥ BT-73 | business rule |
+  | `BR-FX-EN-04` | an invoice that is not a down payment (386) must carry BT-72, BG-14 or BG-26 | business rule |
+
+  The severities are the schematron's own, not this library's choice: 0.3.0 simply
+  ignored them and treated all three as blocking. If you relied on that, match on
+  `{:ok, :valid}` specifically, or inspect the findings returned by
+  `{:ok, {:valid_with_warnings, findings}}`.
+- Findings gain a `:flag` key carrying the SVRL severity (`nil` when the rule
+  declares none). Only `"warning"` and `"info"` are non-blocking; anything else,
+  **including an absent flag**, counts as an error — defaulting to "invalid" is
+  the safe way round. In the bundled schematron only 3 of 621 assertions are
+  flagged, all as `warning`.
+
+### Notes
+- Running the bundled Schematron locally needs Saxon's `--insecure` flag, which
+  permits the `document()` call that loads the code-list DB. Mind that the image's
+  `CMD` must be rebuilt rather than appended to:
+
+  ```
+  docker run -d --rm -p 5000:5000 ghcr.io/willemvlh/saxon-server \
+    /bin/sh -c 'java $JAVA_OPTS -jar app.jar --insecure'
+  ```
+
 ## [0.3.0] - 2026-07-30
 
 Support of the two data items the French e-invoicing mandate requires on top of

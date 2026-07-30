@@ -10,7 +10,25 @@ defmodule Facturx.Validate do
   Run a Saxon server (e.g. `ghcr.io/willemvlh/saxon-server`, port 5000) and
   point `:endpoint` at its `/transform` route. The transform is sent the XML and
   the XSLT as a `multipart/form-data` body and returns an SVRL report, which we
-  interpret into `failed-assert` / `successful-report` violations.
+  interpret into `failed-assert` / `successful-report` findings.
+
+  Findings are split by SVRL severity: only those flagged `"warning"` or `"info"`
+  are non-blocking, so a document carrying nothing worse stays **valid**.
+
+      {:ok, :valid}
+      {:ok, {:valid_with_warnings, [%{flag: "warning", message: "…"}]}}
+      {:error, {:invalid, [%{flag: nil, message: "…"}]}}
+
+  Only three assertions in the bundled schematron are flagged `warning`, and two
+  are business rules rather than cosmetics: `PEPPOL-EN16931-R008` (no empty
+  elements), `BR-29` (BT-74 must be ≥ BT-73) and `BR-FX-EN-04` (a non-down-payment
+  invoice must carry BT-72, BG-14 or BG-26). So `{:ok, {:valid_with_warnings, _}}`
+  is not necessarily benign — inspect the findings.
+
+  The common trigger is R008: with neither `:ship_to` nor `:delivery_date` set,
+  `Facturx.CII` still has to emit an empty `ram:ApplicableHeaderTradeDelivery`,
+  which CII requires. Supply delivery data (which `BR-FX-EN-04` wants anyway) and
+  a plain `{:ok, :valid}` is the normal outcome.
 
   > Privacy: a **public** Saxon endpoint means sending real invoice data to a
   > third party. Self-host the Saxon server in production.
@@ -32,12 +50,23 @@ defmodule Facturx.Validate do
        "https://raw.githubusercontent.com/akretion/factur-x/refs/heads/master/src/facturx/xsd_and_schematron/facturx-en16931/FACTUR-X_EN16931_codedb.xml"}
   }
 
-  @typedoc "A schematron violation."
+  @typedoc """
+  A schematron finding.
+
+  `:flag` is the SVRL severity when the rule declares one. Only findings flagged
+  `"warning"` or `"info"` are treated as non-blocking; everything else — including
+  an absent flag — counts as an error.
+  """
   @type violation :: %{
           message: String.t() | nil,
           location: String.t() | nil,
-          test: String.t() | nil
+          test: String.t() | nil,
+          flag: String.t() | nil
         }
+
+  # SVRL flags that do not make a document invalid. Anything else, `nil`
+  # included, is an error: defaulting to "invalid" is the safe way round.
+  @warning_flags ~w(warning info)
 
   @doc """
   Validate `xml` against the EN 16931 Schematron via a Saxon endpoint.
@@ -52,7 +81,10 @@ defmodule Facturx.Validate do
     * `:receive_timeout` — HTTP receive timeout (ms), default 20_000
   """
   @spec validate(binary(), keyword()) ::
-          {:ok, :valid} | {:error, {:invalid, [violation()]}} | {:error, term()}
+          {:ok, :valid}
+          | {:ok, {:valid_with_warnings, [violation()]}}
+          | {:error, {:invalid, [violation()]}}
+          | {:error, term()}
   def validate(xml, opts \\ []) when is_binary(xml) do
     with {:ok, xsl} <- schematron_xsl(xml, opts),
          :ok <- ensure_req() do
@@ -131,15 +163,24 @@ defmodule Facturx.Validate do
   def interpret(svrl) when is_binary(svrl) do
     case Saxy.SimpleForm.parse_string(svrl) do
       {:ok, root} ->
-        case collect(root, []) |> Enum.reverse() do
-          [] -> {:ok, :valid}
-          violations -> {:error, {:invalid, violations}}
-        end
+        root
+        |> collect([])
+        |> Enum.reverse()
+        |> Enum.split_with(&(&1.flag in @warning_flags))
+        |> classify()
 
       {:error, reason} ->
         {:error, {:invalid_svrl, reason}}
     end
   end
+
+  # Warnings must not make a document invalid: the EN 16931 schematron reports
+  # PEPPOL-EN16931-R008 ("no empty elements") as flag="warning", and CII forces
+  # an empty ram:ApplicableHeaderTradeDelivery when there is no delivery data —
+  # so a conformant invoice always carries that one.
+  defp classify({_warnings, [_ | _] = errors}), do: {:error, {:invalid, errors}}
+  defp classify({[], []}), do: {:ok, :valid}
+  defp classify({warnings, []}), do: {:ok, {:valid_with_warnings, warnings}}
 
   defp collect({name, attrs, content}, acc) do
     acc =
@@ -159,7 +200,8 @@ defmodule Facturx.Validate do
     %{
       message: child_text(content, "text"),
       location: attr(attrs, "location"),
-      test: attr(attrs, "test")
+      test: attr(attrs, "test"),
+      flag: attr(attrs, "flag")
     }
   end
 

@@ -98,11 +98,17 @@ defmodule Facturx do
   @doc """
   Validate CII XML against the EN 16931 Schematron (business rules).
 
+  Returns `{:ok, :valid}`, `{:ok, {:valid_with_warnings, findings}}` when only
+  `"warning"`/`"info"` severities were reported, or `{:error, {:invalid, errors}}`.
+
   Optional: requires a reachable Saxon endpoint (`:endpoint` opt) and the `req`
   dependency. See `Facturx.Validate`.
   """
   @spec validate(binary(), keyword()) ::
-          {:ok, :valid} | {:error, {:invalid, [map()]}} | {:error, term()}
+          {:ok, :valid}
+          | {:ok, {:valid_with_warnings, [map()]}}
+          | {:error, {:invalid, [map()]}}
+          | {:error, term()}
   defdelegate validate(xml, opts \\ []), to: Validate
 
   @doc """
