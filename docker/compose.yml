@@ -1,0 +1,27 @@
+# Saxon server for running the bundled EN 16931 Schematron locally.
+#
+#   docker compose -f docker/compose.yml up -d --build
+#   FACTURX_SAXON_URL=http://localhost:5000/transform mix test --include saxon
+#
+# The image bakes in the code-list DB so validation stays offline — see
+# docker/Dockerfile for why that matters.
+services:
+  saxon:
+    build:
+      # Root context: the code-list DB is copied out of priv/.
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: facturx-saxon
+    ports:
+      - "5000:5000"
+    # The Schematron XSLT is ~644 KB and Saxon compiles it per request.
+    environment:
+      JAVA_OPTS: -Xmx1g
+    # No healthcheck: both routes are POST, so probing the port would only prove
+    # that *something* answers — on macOS, port 5000 is AirPlay Receiver by
+    # default, which replies 403 and would make a port-based check pass while
+    # every validation fails. Either free the port or map another one:
+    #
+    #   docker compose -f docker/compose.yml run --rm -p 5055:5000 saxon
+    #
+    # `docker compose logs saxon` shows "Started @…" once it is really up.

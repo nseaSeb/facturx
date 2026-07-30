@@ -26,9 +26,10 @@ projects, and to fill the gap on Hex.pm.
 | Validate against EN 16931 Schematron | `Facturx.Validate` | **optional** — `:req` + a Saxon HTTP endpoint |
 
 The EN 16931 Schematron ships compiled in `priv/schematron/`. `validate/2` posts
-the XML + XSLT to a Saxon server (e.g. `ghcr.io/willemvlh/saxon-server`) and
-reads back the SVRL report. The XSLT resolves a code-list DB via `document(...)`,
-so the Saxon server must be allowed to fetch it (`:codedb_url` overrides where).
+the XML + XSLT to a Saxon server and reads back the SVRL report. The XSLT resolves
+a code-list DB via `document(...)`, which Saxon only permits with `--insecure`;
+`docker/` provides an image that enables it and embeds the DB, so validation runs
+offline. It is exercised in CI against invoices the library builds.
 
 Deliberately **out of v1 scope** (delegate to external tools, exactly as the
 Python library does):
@@ -205,13 +206,25 @@ cosmetic, and it fires when neither `:ship_to` nor `:delivery_date` is set, sinc
 CII still requires the `ram:ApplicableHeaderTradeDelivery` container.
 
 The bundled rules load their code-list DB through `document()`, which Saxon
-refuses unless started with `--insecure`. Note that the image's `CMD` has to be
-rebuilt, not appended to:
+refuses unless started with `--insecure`. A ready-made image is provided that
+enables it **and** bakes the code-list DB in, so validation needs no network:
 
 ```sh
-docker run -d --rm -p 5000:5000 ghcr.io/willemvlh/saxon-server \
-  /bin/sh -c 'java $JAVA_OPTS -jar app.jar --insecure'
+docker compose -f docker/compose.yml up -d --build
+
+mix test --include saxon   # with the env vars below
 ```
+
+```elixir
+Facturx.validate(xml,
+  endpoint: "http://localhost:5000/transform",
+  codedb_url: "file:///opt/facturx/FACTUR-X_EN16931_codedb.xml")
+```
+
+Without `:codedb_url`, the XSLT fetches the code-list DB over the network on every
+call — slower, and it tells a third party that you are validating. See
+`docker/Dockerfile` for the details, including why the upstream image's `CMD` has
+to be rebuilt rather than appended to.
 
 ## License
 

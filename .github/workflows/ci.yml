@@ -34,4 +34,56 @@ jobs:
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors
       # :local and :saxon tests are auto-excluded without their fixtures/server.
+      # The schematron job below covers :saxon.
       - run: mix test
+
+  # Runs the bundled EN 16931 schematron against invoices the library builds.
+  # Kept separate so the job above stays free of any Docker dependency, and so a
+  # failure here is unambiguous.
+  schematron:
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-
+
+      # Built here rather than pulled from a registry: the image embeds the
+      # code-list DB from priv/, so nothing is redistributed and the ruleset
+      # matches the commit under test.
+      - run: docker build -f docker/Dockerfile -t facturx-saxon .
+
+      - name: Start Saxon
+        run: |
+          docker run -d -p 5000:5000 --name facturx-saxon facturx-saxon
+          # Wait on the server's own startup line, not on the port: both routes
+          # are POST so a GET proves nothing, and polling the port would happily
+          # succeed against whatever else might be listening on it.
+          timeout 90 sh -c \
+            'until docker logs facturx-saxon 2>&1 | grep -q "Started @"; do sleep 2; done'
+          docker logs facturx-saxon 2>&1 | tail -1
+
+      - run: mix deps.get
+
+      - name: Run schematron tests
+        env:
+          FACTURX_SAXON_URL: http://localhost:5000/transform
+          FACTURX_CODEDB_URL: file:///opt/facturx/FACTUR-X_EN16931_codedb.xml
+        run: mix test --include saxon
+
+      - name: Saxon logs on failure
+        if: failure()
+        run: docker logs facturx-saxon

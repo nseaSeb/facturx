@@ -3,6 +3,27 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+Tooling and tests only — the published package is unchanged apart from README
+wording, so no release is required.
+
+### Added
+- `docker/` — a Saxon image for the bundled Schematron. It starts Saxon with
+  `--insecure` (required for the `document()` call that loads the code-list DB)
+  and bakes the DB in, so validation no longer fetches it over the network on
+  every call. Point `:codedb_url` at `file:///opt/facturx/FACTUR-X_EN16931_codedb.xml`.
+  Not shipped in the Hex package.
+- **Tests against the bundled EN 16931 Schematron**, over invoices the library
+  builds — until now the `:saxon` tests only exercised the HTTP transport with
+  toy stylesheets, so not a single business rule was covered. Notably, one test
+  pins that a BT-8 outside UNTDID 2475 is rejected *even though the XSD accepts
+  it*: that is the exact defect shipped in 0.3.0, which no automated check could
+  have caught.
+- A `schematron` CI job running those tests. It builds the image from the commit
+  under test rather than pulling a published one, so the ruleset always matches
+  the code and nothing is redistributed.
+
 ## [0.4.0] - 2026-07-30
 
 ### Fixed

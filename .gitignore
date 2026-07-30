@@ -15,3 +15,6 @@ facturx-*.tar
 
 # python dev venv
 /.venv-dev/
+
+# Local working notes (roadmap, scratch) — never committed
+*.local.md

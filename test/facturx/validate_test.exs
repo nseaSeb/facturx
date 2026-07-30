@@ -135,4 +135,142 @@ defmodule Facturx.ValidateTest do
                Facturx.validate("<root/>", xsl: @xsl_invalid, endpoint: url)
     end
   end
+
+  # The tests above drive Saxon with toy stylesheets: they cover the transport and
+  # the SVRL parsing, not a single EN 16931 rule. These ones run the *bundled*
+  # schematron over invoices this library built — the only way a broken business
+  # rule gets caught before a platform rejects the invoice.
+  #
+  # Needs a Saxon server started with --insecure; see docker/Dockerfile.
+  # Set FACTURX_CODEDB_URL to resolve the code-list DB from the image instead of
+  # over the network.
+  describe "against the bundled EN 16931 schematron" do
+    @describetag :saxon
+    # Saxon recompiles the 644 KB stylesheet per request, and the upstream image
+    # is amd64-only so it runs emulated on arm64.
+    @describetag timeout: 300_000
+
+    setup do
+      case System.get_env("FACTURX_SAXON_URL") do
+        nil ->
+          raise "set FACTURX_SAXON_URL to run :saxon tests"
+
+        url ->
+          opts = [endpoint: url]
+
+          opts =
+            case System.get_env("FACTURX_CODEDB_URL") do
+              nil -> opts
+              codedb -> Keyword.put(opts, :codedb_url, codedb)
+            end
+
+          {:ok, opts: opts}
+      end
+    end
+
+    defp invoice(extra \\ %{}) do
+      d = &Decimal.new/1
+
+      Map.merge(
+        %Facturx.Invoice{
+          number: "SCH-1",
+          issue_date: ~D[2026-07-30],
+          due_date: ~D[2026-08-29],
+          # BR-FX-EN-04 wants BT-72, BG-14 or BG-26; BT-72 also keeps
+          # ram:ApplicableHeaderTradeDelivery non-empty, so PEPPOL-R008 stays quiet.
+          delivery_date: ~D[2026-07-30],
+          seller: %{
+            name: "ACME SARL",
+            legal_id: "123456782",
+            legal_scheme: "0002",
+            vat: "FR12123456782",
+            address: %{
+              line_one: "1 rue de Rivoli",
+              postcode: "75001",
+              city: "Paris",
+              country: "FR"
+            }
+          },
+          buyer: %{
+            name: "Client SAS",
+            legal_id: "987654321",
+            legal_scheme: "0002",
+            vat: "FR98765432100",
+            address: %{
+              line_one: "2 place Bellecour",
+              postcode: "69001",
+              city: "Lyon",
+              country: "FR"
+            }
+          },
+          lines: [
+            %{
+              id: "1",
+              name: "Prestation",
+              net_price: d.("100.00"),
+              quantity: d.("2"),
+              unit: "C62",
+              vat_category: "S",
+              vat_rate: d.("20.00"),
+              line_total: d.("200.00")
+            }
+          ],
+          tax_breakdown: [
+            %{
+              type: "VAT",
+              category: "S",
+              rate: d.("20.00"),
+              basis: d.("200.00"),
+              calculated: d.("40.00")
+            }
+          ],
+          totals: %{
+            line_total: d.("200.00"),
+            tax_basis_total: d.("200.00"),
+            tax_total: d.("40.00"),
+            grand_total: d.("240.00"),
+            due_payable: d.("240.00")
+          }
+        },
+        extra
+      )
+    end
+
+    test "an invoice built by this library satisfies the business rules", %{opts: opts} do
+      {:ok, xml} = Facturx.build(invoice())
+
+      assert {:ok, :valid} = Facturx.validate(xml, opts)
+    end
+
+    test "the French BT-23/BT-8 fields break no rule", %{opts: opts} do
+      {:ok, xml} =
+        Facturx.build(invoice(%{business_process: "S1", tax_due_date_type_code: "5"}))
+
+      assert {:ok, :valid} = Facturx.validate(xml, opts)
+    end
+
+    # This is the case the XSD cannot see: qdt:TimeReferenceCodeType is an
+    # unrestricted xs:token, so only the schematron carries the code list. A
+    # regression here means shipping invoices a platform will reject.
+    test "a BT-8 outside UNTDID 2475 is rejected, though the XSD accepts it", %{opts: opts} do
+      {:ok, xml} =
+        Facturx.build(invoice(%{tax_due_date_type_code: "3"}), validate_vat_point_date: false)
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+
+      assert {:error, {:invalid, errors}} = Facturx.validate(xml, opts)
+      assert Enum.any?(errors, &(&1.message =~ "DueDateTypeCode"))
+    end
+
+    # Pins the severity split against the real ruleset: without delivery data CII
+    # forces an empty ram:ApplicableHeaderTradeDelivery, which PEPPOL-EN16931-R008
+    # flags as a warning. That must stay non-blocking.
+    test "a warning-only document is valid, not invalid", %{opts: opts} do
+      {:ok, xml} = Facturx.build(invoice(%{delivery_date: nil}))
+
+      assert {:ok, {:valid_with_warnings, findings}} = Facturx.validate(xml, opts)
+      assert Enum.all?(findings, &(&1.flag == "warning"))
+      assert Enum.any?(findings, &(&1.message =~ "R008"))
+    end
+  end
 end
