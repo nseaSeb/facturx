@@ -46,7 +46,7 @@ Python library does):
 ```elixir
 def deps do
   [
-    {:facturx, "~> 0.4"},
+    {:facturx, "~> 0.5"},
     # only if you use Facturx.validate/2:
     {:req, "~> 0.5"}
   ]

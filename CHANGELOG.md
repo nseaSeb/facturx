@@ -3,7 +3,11 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## [0.5.0] - 2026-07-30
+
+The French regulatory core, complete within the EN 16931 profile: **50/116 → 96/116**
+data items emitted. Additive throughout — new fields default to empty, so existing
+callers see byte-identical output.
 
 ### Added
 - **Notes** (BG-1) — `Facturx.Invoice.notes`, a list of
