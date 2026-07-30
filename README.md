@@ -194,4 +194,10 @@ Schematron (EN 16931 business rules) — needs a reachable Saxon server
 
 ## License
 
-MIT.
+MIT — see [`LICENSE`](LICENSE).
+
+The XSD and Schematron artefacts bundled under `priv/` are third-party standard
+schemas, not part of this library's code: Factur-X / EN 16931 (UN/CEFACT CII),
+as packaged by [`akretion/factur-x`](https://github.com/akretion/factur-x)
+(BSD-3-Clause). Their notices and licence texts are reproduced in
+[`priv/NOTICE.md`](priv/NOTICE.md).
