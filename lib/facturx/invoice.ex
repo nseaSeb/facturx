@@ -58,7 +58,42 @@ defmodule Facturx.Invoice do
           optional(:unit) => String.t(),
           optional(:vat_category) => String.t(),
           optional(:vat_rate) => Decimal.t(),
-          optional(:line_total) => Decimal.t()
+          optional(:line_total) => Decimal.t(),
+          optional(:allowances) => [allowance_charge()],
+          optional(:charges) => [allowance_charge()]
+        }
+
+  @typedoc """
+  A document- or line-level allowance (BG-20 / BG-27) or charge (BG-21 / BG-28).
+
+  Both map to the same CII element, told apart by `ChargeIndicator`; which list you
+  put the entry in decides that, so there is no flag to get wrong.
+
+  `:amount` is the amount itself (BT-92 / BT-99, and the only required field),
+  `:basis_amount` what a percentage applies to (BT-93 / BT-100), `:percent` that
+  percentage (BT-94 / BT-101), `:vat_category` and `:vat_rate` the VAT it falls
+  under (BT-95/BT-96 / BT-102/BT-103), `:reason` and `:reason_code` why
+  (BT-97/BT-98 / BT-104/BT-105).
+
+  > #### Two rules only the schematron enforces {: .warning}
+  >
+  > **Every entry needs a `:reason` or a `:reason_code`** — `BR-33`/`BR-38` at
+  > document level, `BR-42`/`BR-44` on a line. An entry with just an amount is
+  > structurally valid and gets the invoice rejected.
+  >
+  > **Document-level entries must match `:totals`** (`:allowance_total`,
+  > `:charge_total`), which in turn feed `:tax_basis_total` — `BR-CO-11`,
+  > `BR-CO-12`, `BR-CO-13`. None of that arithmetic is computed here, and the XSD
+  > does not check any of it.
+  """
+  @type allowance_charge :: %{
+          optional(:amount) => Decimal.t(),
+          optional(:basis_amount) => Decimal.t(),
+          optional(:percent) => Decimal.t(),
+          optional(:vat_category) => String.t(),
+          optional(:vat_rate) => Decimal.t(),
+          optional(:reason) => String.t(),
+          optional(:reason_code) => String.t()
         }
 
   @typedoc """
@@ -158,12 +193,24 @@ defmodule Facturx.Invoice do
           optional(:exemption_reason_code) => String.t()
         }
 
-  @typedoc "Document-level monetary summation."
+  @typedoc """
+  Document-level monetary summation.
+
+  `:prepaid` (BT-113) is what has already been paid — the down payments a final
+  invoice nets off, so it goes with `:preceding_invoices`. `:rounding` is BT-114.
+
+  Beware the wire order, which does not follow the BT numbering: CII emits
+  `ChargeTotalAmount` **before** `AllowanceTotalAmount`.
+  """
   @type totals :: %{
           optional(:line_total) => Decimal.t(),
+          optional(:charge_total) => Decimal.t(),
+          optional(:allowance_total) => Decimal.t(),
           optional(:tax_basis_total) => Decimal.t(),
           optional(:tax_total) => Decimal.t(),
+          optional(:rounding) => Decimal.t(),
           optional(:grand_total) => Decimal.t(),
+          optional(:prepaid) => Decimal.t(),
           optional(:due_payable) => Decimal.t()
         }
 
@@ -183,6 +230,8 @@ defmodule Facturx.Invoice do
           billing_period: period() | nil,
           preceding_invoices: [preceding_invoice()],
           payment_means: [payment_means()],
+          allowances: [allowance_charge()],
+          charges: [allowance_charge()],
           lines: [line()],
           tax_breakdown: [tax()],
           tax_due_date_type_code: String.t() | nil,
@@ -213,6 +262,10 @@ defmodule Facturx.Invoice do
             preceding_invoices: [],
             # BG-16 — how the invoice is to be paid (IBAN, BIC, direct debit, card)
             payment_means: [],
+            # BG-20 / BG-21 — document-level allowances and charges. Keep :totals
+            # in step (:allowance_total / :charge_total), or BR-CO-11/12 reject it.
+            allowances: [],
+            charges: [],
             lines: [],
             tax_breakdown: [],
             # BT-8 (UNTDID 2475, one of `Facturx.vat_point_date_codes/0`) — VAT

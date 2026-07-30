@@ -237,16 +237,22 @@ defmodule Facturx.CII do
         qty("ram:BilledQuantity", line[:quantity], line[:unit])
       ]),
       e("ram:SpecifiedLineTradeSettlement", [
-        e("ram:ApplicableTradeTax", [
-          # Line-level trade tax is always VAT under EN 16931.
-          t("ram:TypeCode", "VAT"),
-          t("ram:CategoryCode", line[:vat_category]),
-          t("ram:RateApplicablePercent", decimal(line[:vat_rate]))
-        ]),
+        line_trade_tax(line),
+        # BG-27 / BG-28 — after the tax, before the line summation.
+        allowances_and_charges(line),
         e("ram:SpecifiedTradeSettlementLineMonetarySummation", [
           amount("ram:LineTotalAmount", line[:line_total])
         ])
       ])
+    ])
+  end
+
+  defp line_trade_tax(line) do
+    e("ram:ApplicableTradeTax", [
+      # Line-level trade tax is always VAT under EN 16931.
+      t("ram:TypeCode", "VAT"),
+      t("ram:CategoryCode", line[:vat_category]),
+      t("ram:RateApplicablePercent", decimal(line[:vat_rate]))
     ])
   end
 
@@ -295,13 +301,17 @@ defmodule Facturx.CII do
       # InvoiceReferencedDocument comes *after* the summation in
       # HeaderTradeSettlementType, counter-intuitive as that reads.
       # PaymentMeans precedes ApplicableTradeTax in HeaderTradeSettlementType.
+      # SpecifiedTradeAllowanceCharge sits between the period and the terms.
       [t("ram:InvoiceCurrencyCode", inv.currency)] ++
         Enum.map(inv.payment_means, &payment_means/1) ++
         Enum.map(inv.tax_breakdown, &trade_tax(&1, inv.tax_due_date_type_code)) ++
         [
           # BillingSpecifiedPeriod sits between ApplicableTradeTax and
           # SpecifiedTradePaymentTerms in HeaderTradeSettlementType.
-          billing_period(inv.billing_period),
+          billing_period(inv.billing_period)
+        ] ++
+        allowances_and_charges(Map.from_struct(inv)) ++
+        [
           payment_terms(inv.due_date),
           monetary_summation(inv.totals, inv.currency)
         ] ++
@@ -327,6 +337,31 @@ defmodule Facturx.CII do
       date_el("ram:StartDateTime", period[:start_date]),
       date_el("ram:EndDateTime", period[:end_date])
     ])
+  end
+
+  # BG-20/BG-21 at document level, BG-27/BG-28 on a line — one CII element for all
+  # four, told apart by ChargeIndicator. Order follows TradeAllowanceChargeType, in
+  # which ReasonCode precedes Reason (the reverse of the BT numbering).
+  defp allowance_charge(ac, charge?) do
+    e("ram:SpecifiedTradeAllowanceCharge", [
+      wrap("ram:ChargeIndicator", t("udt:Indicator", to_string(charge?))),
+      t("ram:CalculationPercent", decimal(ac[:percent])),
+      amount("ram:BasisAmount", ac[:basis_amount]),
+      amount("ram:ActualAmount", ac[:amount]),
+      t("ram:ReasonCode", ac[:reason_code]),
+      t("ram:Reason", ac[:reason]),
+      # CategoryTradeTax is a TradeTaxType, so TypeCode / CategoryCode / rate.
+      maybe("ram:CategoryTradeTax", [
+        t("ram:TypeCode", (ac[:vat_category] || ac[:vat_rate]) && "VAT"),
+        t("ram:CategoryCode", ac[:vat_category]),
+        t("ram:RateApplicablePercent", decimal(ac[:vat_rate]))
+      ])
+    ])
+  end
+
+  defp allowances_and_charges(container) do
+    Enum.map(container[:allowances] || [], &allowance_charge(&1, false)) ++
+      Enum.map(container[:charges] || [], &allowance_charge(&1, true))
   end
 
   # BG-16 (BT-81 / BT-82) with its account and institution sub-blocks. Order follows
@@ -378,12 +413,18 @@ defmodule Facturx.CII do
     e("ram:SpecifiedTradePaymentTerms", [date_el("ram:DueDateDateTime", due)])
   end
 
+  # Wire order does not follow the BT numbering: ChargeTotalAmount comes *before*
+  # AllowanceTotalAmount, though BT-107 (allowances) precedes BT-108 (charges).
   defp monetary_summation(totals, currency) do
     e("ram:SpecifiedTradeSettlementHeaderMonetarySummation", [
       amount("ram:LineTotalAmount", totals[:line_total]),
+      amount("ram:ChargeTotalAmount", totals[:charge_total]),
+      amount("ram:AllowanceTotalAmount", totals[:allowance_total]),
       amount("ram:TaxBasisTotalAmount", totals[:tax_basis_total]),
       amount("ram:TaxTotalAmount", totals[:tax_total], currency),
+      amount("ram:RoundingAmount", totals[:rounding]),
       amount("ram:GrandTotalAmount", totals[:grand_total]),
+      amount("ram:TotalPrepaidAmount", totals[:prepaid]),
       amount("ram:DuePayableAmount", totals[:due_payable])
     ])
   end
@@ -559,6 +600,8 @@ defmodule Facturx.CII do
         settlement
         |> find_all("ram:SpecifiedTradeSettlementPaymentMeans")
         |> Enum.map(&parse_payment_means/1),
+      allowances: elem(parse_allowances_and_charges(settlement), 0),
+      charges: elem(parse_allowances_and_charges(settlement), 1),
       seller: parse_party(find(agreement, "ram:SellerTradeParty")),
       buyer: parse_party(find(agreement, "ram:BuyerTradeParty")),
       ship_to: parse_party(find(delivery, "ram:ShipToTradeParty")),
@@ -634,8 +677,22 @@ defmodule Facturx.CII do
             "ram:SpecifiedTradeSettlementLineMonetarySummation",
             "ram:LineTotalAmount"
           ])
-        )
+        ),
+      allowances: line_allowances(li, 0),
+      charges: line_allowances(li, 1)
     })
+  end
+
+  # prune/1 drops nil, not [], so keep empty lists out of the map to preserve the
+  # round-trip against a line that never mentioned them.
+  defp line_allowances(li, index) do
+    case li
+         |> find("ram:SpecifiedLineTradeSettlement")
+         |> parse_allowances_and_charges()
+         |> elem(index) do
+      [] -> nil
+      list -> list
+    end
   end
 
   defp parse_tax(tt) do
@@ -648,6 +705,31 @@ defmodule Facturx.CII do
       due_date_type_code: child_text(tt, "ram:DueDateTypeCode"),
       exemption_reason: child_text(tt, "ram:ExemptionReason"),
       exemption_reason_code: child_text(tt, "ram:ExemptionReasonCode")
+    })
+  end
+
+  # Splits one CII element back into the two lists, on ChargeIndicator.
+  defp parse_allowances_and_charges(container) do
+    {charges, allowances} =
+      container
+      |> find_all("ram:SpecifiedTradeAllowanceCharge")
+      |> Enum.split_with(&(path_text(&1, ["ram:ChargeIndicator", "udt:Indicator"]) == "true"))
+
+    {Enum.map(allowances, &parse_allowance_charge/1),
+     Enum.map(charges, &parse_allowance_charge/1)}
+  end
+
+  defp parse_allowance_charge(ac) do
+    tax = find(ac, "ram:CategoryTradeTax")
+
+    prune(%{
+      percent: num(child_text(ac, "ram:CalculationPercent")),
+      basis_amount: num(child_text(ac, "ram:BasisAmount")),
+      amount: num(child_text(ac, "ram:ActualAmount")),
+      reason_code: child_text(ac, "ram:ReasonCode"),
+      reason: child_text(ac, "ram:Reason"),
+      vat_category: child_text(tax, "ram:CategoryCode"),
+      vat_rate: num(child_text(tax, "ram:RateApplicablePercent"))
     })
   end
 
@@ -733,9 +815,13 @@ defmodule Facturx.CII do
   defp parse_totals(ms) do
     prune(%{
       line_total: num(child_text(ms, "ram:LineTotalAmount")),
+      charge_total: num(child_text(ms, "ram:ChargeTotalAmount")),
+      allowance_total: num(child_text(ms, "ram:AllowanceTotalAmount")),
       tax_basis_total: num(child_text(ms, "ram:TaxBasisTotalAmount")),
       tax_total: num(child_text(ms, "ram:TaxTotalAmount")),
+      rounding: num(child_text(ms, "ram:RoundingAmount")),
       grand_total: num(child_text(ms, "ram:GrandTotalAmount")),
+      prepaid: num(child_text(ms, "ram:TotalPrepaidAmount")),
       due_payable: num(child_text(ms, "ram:DuePayableAmount"))
     })
   end

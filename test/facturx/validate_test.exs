@@ -304,6 +304,73 @@ defmodule Facturx.ValidateTest do
       assert {:ok, :valid} = Facturx.validate(xml, opts)
     end
 
+    # BR-CO-11/12/13/16 tie the allowance and charge totals to the entries and to
+    # the tax basis. Only the schematron does this arithmetic, so it is the sole
+    # guard against emitting an invoice whose totals do not add up.
+    test "allowances, charges and their totals add up", %{opts: opts} do
+      d = &Decimal.new/1
+
+      # lines 200 − allowance 20 + charge 5 = basis 185; VAT 37; prepaid 50; due 172
+      {:ok, xml} =
+        Facturx.build(
+          invoice(%{
+            # BR-33/BR-38 want a reason on each entry, not just an amount
+            allowances: [
+              %{amount: d.("20.00"), vat_category: "S", vat_rate: d.("20.00"), reason: "Remise"}
+            ],
+            charges: [
+              %{amount: d.("5.00"), vat_category: "S", vat_rate: d.("20.00"), reason: "Port"}
+            ],
+            tax_breakdown: [
+              %{
+                type: "VAT",
+                category: "S",
+                rate: d.("20.00"),
+                basis: d.("185.00"),
+                calculated: d.("37.00")
+              }
+            ],
+            totals: %{
+              line_total: d.("200.00"),
+              allowance_total: d.("20.00"),
+              charge_total: d.("5.00"),
+              tax_basis_total: d.("185.00"),
+              tax_total: d.("37.00"),
+              grand_total: d.("222.00"),
+              prepaid: d.("50.00"),
+              due_payable: d.("172.00")
+            }
+          })
+        )
+
+      assert {:ok, :valid} = Facturx.validate(xml, opts)
+    end
+
+    test "a total that contradicts its entries is rejected", %{opts: opts} do
+      d = &Decimal.new/1
+
+      # allowance_total claims 99 while the only allowance is 20
+      {:ok, xml} =
+        Facturx.build(
+          invoice(%{
+            allowances: [
+              %{amount: d.("20.00"), vat_category: "S", vat_rate: d.("20.00"), reason: "Remise"}
+            ],
+            totals: %{
+              line_total: d.("200.00"),
+              allowance_total: d.("99.00"),
+              tax_basis_total: d.("180.00"),
+              tax_total: d.("36.00"),
+              grand_total: d.("216.00"),
+              due_payable: d.("216.00")
+            }
+          })
+        )
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml), "the XSD does no arithmetic"
+      assert {:error, {:invalid, _}} = Facturx.validate(xml, opts)
+    end
+
     test "payment means break no rule", %{opts: opts} do
       {:ok, xml} =
         Facturx.build(

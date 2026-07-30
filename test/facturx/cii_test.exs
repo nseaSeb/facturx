@@ -561,6 +561,153 @@ defmodule Facturx.CIITest do
     end
   end
 
+  # BG-20/BG-21 at document level, BG-27/BG-28 on a line — one CII element for all
+  # four, told apart by ChargeIndicator.
+  describe "allowances and charges (BG-20/21, BG-27/28)" do
+    # Arithmetic the schematron actually checks: lines 200, allowance 20, charge 5,
+    # so basis = 185, VAT 20% = 37, prepaid 50, due = 172 (BR-CO-11/12/13/16).
+    defp with_allowances do
+      d = &Decimal.new/1
+
+      %{
+        sample_invoice()
+        | allowances: [
+            %{
+              amount: d.("20.00"),
+              basis_amount: d.("200.00"),
+              percent: d.("10.00"),
+              vat_category: "S",
+              vat_rate: d.("20.00"),
+              reason: "Remise commerciale",
+              reason_code: "95"
+            }
+          ],
+          charges: [
+            %{
+              amount: d.("5.00"),
+              vat_category: "S",
+              vat_rate: d.("20.00"),
+              reason: "Frais de port"
+            }
+          ],
+          tax_breakdown: [
+            %{
+              type: "VAT",
+              category: "S",
+              rate: d.("20.00"),
+              basis: d.("185.00"),
+              calculated: d.("37.00")
+            }
+          ],
+          totals: %{
+            line_total: d.("200.00"),
+            allowance_total: d.("20.00"),
+            charge_total: d.("5.00"),
+            tax_basis_total: d.("185.00"),
+            tax_total: d.("37.00"),
+            grand_total: d.("222.00"),
+            prepaid: d.("50.00"),
+            due_payable: d.("172.00")
+          }
+      }
+    end
+
+    test "validates and round-trips, allowances and charges kept apart" do
+      inv = with_allowances()
+      {:ok, xml} = Facturx.build(inv)
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, parsed} = Facturx.parse(xml)
+      assert parsed == inv
+      assert [%{reason: "Remise commerciale"}] = parsed.allowances
+      assert [%{reason: "Frais de port"}] = parsed.charges
+    end
+
+    test "ChargeIndicator distinguishes the two" do
+      {:ok, xml} = Facturx.build(with_allowances())
+
+      assert length(String.split(xml, "<udt:Indicator>false</udt:Indicator>")) - 1 == 1
+      assert length(String.split(xml, "<udt:Indicator>true</udt:Indicator>")) - 1 == 1
+    end
+
+    # TradeAllowanceChargeType puts ReasonCode before Reason, the reverse of the BT
+    # numbering (BT-97 reason, BT-98 code).
+    test "ReasonCode precedes Reason" do
+      {:ok, xml} = Facturx.build(with_allowances())
+
+      assert xml =~
+               "<ram:ReasonCode>95</ram:ReasonCode>" <>
+                 "<ram:Reason>Remise commerciale</ram:Reason>"
+    end
+
+    # BT-107 (allowances) precedes BT-108 (charges) in the numbering, but CII emits
+    # ChargeTotalAmount first.
+    test "ChargeTotalAmount is emitted before AllowanceTotalAmount" do
+      {:ok, xml} = Facturx.build(with_allowances())
+
+      assert xml =~
+               "<ram:ChargeTotalAmount>5.00</ram:ChargeTotalAmount>" <>
+                 "<ram:AllowanceTotalAmount>20.00</ram:AllowanceTotalAmount>"
+    end
+
+    test "prepaid and rounding land either side of the grand total" do
+      d = &Decimal.new/1
+      inv = put_in(with_allowances().totals[:rounding], d.("0.01"))
+      {:ok, xml} = Facturx.build(inv)
+
+      assert xml =~
+               "<ram:RoundingAmount>0.01</ram:RoundingAmount>" <>
+                 "<ram:GrandTotalAmount>222.00</ram:GrandTotalAmount>" <>
+                 "<ram:TotalPrepaidAmount>50.00</ram:TotalPrepaidAmount>"
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "line-level allowances sit between the tax and the line summation" do
+      d = &Decimal.new/1
+
+      inv =
+        put_in(sample_invoice().lines, [
+          %{
+            id: "1",
+            name: "P",
+            net_price: d.("100.00"),
+            quantity: d.("2"),
+            unit: "C62",
+            vat_category: "S",
+            vat_rate: d.("20.00"),
+            line_total: d.("200.00"),
+            allowances: [%{amount: d.("5.00"), reason: "Remise ligne"}],
+            charges: [%{amount: d.("2.00"), reason: "Emballage"}]
+          }
+        ])
+
+      {:ok, xml} = Facturx.build(inv)
+
+      [line] =
+        Regex.run(
+          ~r|<ram:SpecifiedLineTradeSettlement>.*?</ram:SpecifiedLineTradeSettlement>|s,
+          xml
+        )
+
+      tax = :binary.match(line, "ram:ApplicableTradeTax")
+      ac = :binary.match(line, "ram:SpecifiedTradeAllowanceCharge")
+      summation = :binary.match(line, "SpecifiedTradeSettlementLineMonetarySummation")
+      assert elem(tax, 0) < elem(ac, 0)
+      assert elem(ac, 0) < elem(summation, 0)
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "no allowance or charge emits nothing" do
+      {:ok, xml} = Facturx.build(sample_invoice())
+      refute xml =~ "SpecifiedTradeAllowanceCharge"
+      refute xml =~ "AllowanceTotalAmount"
+    end
+  end
+
   # BG-16 — how the invoice is to be paid. Sub-blocks have differing requirements:
   # the debtor account and the institution each have a required child, the creditor
   # account has none, so an empty one must not be emitted at all.

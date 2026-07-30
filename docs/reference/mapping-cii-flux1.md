@@ -20,7 +20,7 @@ Table de correspondance complète entre les **données réglementaires du Flux 1
 
 ## Ce que les « — » impliquent réellement
 
-Les 50 données non émises se répartissent en catégories très inégales en gravité.
+Les 36 données non émises se répartissent en catégories très inégales en gravité.
 C'est cette lecture, plus que le décompte brut, qui dit où on en est.
 
 ### 1. Plus aucun trou inconditionnel
@@ -43,12 +43,8 @@ voudra l'émettre, il faudra émettre **tout** son contenu obligatoire :
 |---|---|
 | `BT-29d` assujetti unique (`0..1`) | `BT-29d-1` (schéma, `0231`) |
 | `BG-11` REPRÉSENTANT FISCAL (`0..1`) | `BT-63`, `BT-63-0` |
-| `BG-20` REMISES document (`0..n`) | `BT-92`, `BT-95`, `BT-95-0` |
-| `BG-21` CHARGES document (`0..n`) | `BT-99`, `BT-102`, `BT-102-0` |
 | `BT-111` TVA en devise de comptabilisation (`0..1`) | `BT-111-1` (devise) |
 | `BG-26` PÉRIODE de ligne (`0..1`) | `BT-134-1`, `BT-135-1` |
-| `BG-27` REMISE de ligne (`0..n`) | `BT-136` |
-| `BG-28` CHARGE de ligne (`0..n`) | `BT-141` |
 | `EXT-FR-FE-150` adresse de livraison de ligne (`0..1`) | `EXT-FR-FE-157` (code pays) |
 
 ### 3. Purement optionnelles
@@ -119,16 +115,16 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BT-78` | 0..1 | C | Code postal Adresse de livraison | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:PostcodeCode` |
 | `BT-79` | 0..1 | C | Subdivision du pays | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CountrySubDivisionName` |
 | `BT-80` | 1..1 | C | Code de pays | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CountryID` |
-| `BG-20` | 0..n | C | REMISES AU NIVEAU DU DOCUMENT | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge ChargeIndicator=false` |
-| `BT-92` | 1..1 | C | Montant de la remise au niveau document | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:ActualAmount` |
-| `BT-95` | 1..1 | C | Code de type de TVA de la remise au niveau du document | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:CategoryCode with ram:TypeCode = "VAT"` |
-| `BT-95-0` | 1..1 | C | Qualifiant d'identifiant du code type de TVA de la remise au niveau du document | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:TypeCode = "VAT"` |
-| `BT-96` | 0..1 | C | Taux de TVA de la remise au niveau du document | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:RateApplicablePercent` |
-| `BG-21` | 0..n | C | CHARGES OU FRAIS AU NIVEAU DU DOCUMENT | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge ChargeIndicator=true` |
-| `BT-99` | 1..1 | C | Montant des charges ou frais au niveau document | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:ActualAmount` |
-| `BT-102` | 1..1 | C | Code de type de TVA des charges ou frais au niveau du document | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:CategoryCode` |
-| `BT-102-0` | 1..1 | C | Qualifiant d'identifiant du code type de TVA des charges ou frais au niveau du document | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:TypeCode = "VAT"` |
-| `BT-103` | 0..1 | C | Taux de TVA des charges ou frai au niveau du document | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:RateApplicablePercent` |
+| `BG-20` | 0..n | C | REMISES AU NIVEAU DU DOCUMENT | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge ChargeIndicator=false` |
+| `BT-92` | 1..1 | C | Montant de la remise au niveau document | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:ActualAmount` |
+| `BT-95` | 1..1 | C | Code de type de TVA de la remise au niveau du document | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:CategoryCode with ram:TypeCode = "VAT"` |
+| `BT-95-0` | 1..1 | C | Qualifiant d'identifiant du code type de TVA de la remise au niveau du document | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:TypeCode = "VAT"` |
+| `BT-96` | 0..1 | C | Taux de TVA de la remise au niveau du document | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:RateApplicablePercent` |
+| `BG-21` | 0..n | C | CHARGES OU FRAIS AU NIVEAU DU DOCUMENT | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge ChargeIndicator=true` |
+| `BT-99` | 1..1 | C | Montant des charges ou frais au niveau document | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:ActualAmount` |
+| `BT-102` | 1..1 | C | Code de type de TVA des charges ou frais au niveau du document | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:CategoryCode` |
+| `BT-102-0` | 1..1 | C | Qualifiant d'identifiant du code type de TVA des charges ou frais au niveau du document | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:TypeCode = "VAT"` |
+| `BT-103` | 0..1 | C | Taux de TVA des charges ou frai au niveau du document | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:CategoryTradeTax/ram:RateApplicablePercent` |
 | `BG-22` | 1..1 | D | TOTAUX DU DOCUMENT | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeSettlementHeaderMonetarySummation` |
 | `BT-109` | 1..1 | D | Montant total de la facture hors TVA | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeSettlementHeaderMonetarySummation/ram:TaxBasisTotalAmount` |
 | `BT-110` | 1,11..1 | D | Montant total de TVA de la facture | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeSettlementHeaderMonetarySummation/ram:TaxTotalAmount` |
@@ -172,10 +168,10 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BT-134-1` | 1..1 | C | Format date | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:StartDateTime/udt:DateTimeString@format` |
 | `BT-135` | 0..1 | C | Date de fin de période de facturation d'une ligne | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:EndDateTime/udt:DateTimeString` |
 | `BT-135-1` | 1..1 | C | Format date | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:EndDateTime/udt:DateTimeString@format` |
-| `BG-27` | 0..n | C | REMISE DE LIGNE DE FACTURE | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeAllowanceCharge with ChargeIndicator = 'false'` |
-| `BT-136` | 1..1 | C | Montant d'une remise, hors TVA | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:ActualAmount` |
-| `BG-28` | 0..n | C | CHARGE OU FRAIS D'UNE LIGNE DE FACTURE | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeAllowanceCharge with ChargeIndicator = 'true'` |
-| `BT-141` | 1..1 | C | Montant des charges ou frais | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:ActualAmount` |
+| `BG-27` | 0..n | C | REMISE DE LIGNE DE FACTURE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeAllowanceCharge with ChargeIndicator = 'false'` |
+| `BT-136` | 1..1 | C | Montant d'une remise, hors TVA | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:ActualAmount` |
+| `BG-28` | 0..n | C | CHARGE OU FRAIS D'UNE LIGNE DE FACTURE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeAllowanceCharge with ChargeIndicator = 'true'` |
+| `BT-141` | 1..1 | C | Montant des charges ou frais | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:ActualAmount` |
 | `BG-29` | 1..1 | C | DÉTAIL DU PRIX | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeAgreement` |
 | `BT-146` | 1..1 | C | Prix net de l'article | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeAgreement/ram:NetPriceProductTradePrice/ram:ChargeAmount` |
 | `BT-147` | 0..1 | C | Rabais sur le prix de l'article | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeAgreement/ram:GrossPriceProductTradePrice/ram:AppliedTradeAllowanceCharge/ram:ActualAmount with ChargeIndicator = « False »` |
@@ -183,4 +179,4 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BG-31` | 1..1 | C | INFORMATION SUR L'ARTICLE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedTradeProduct` |
 | `BT-153` | 1..1 | C | Nom de l'article | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedTradeProduct/ram:Name` |
 
-**Couverture** : 66 / 116 données réglementaires émises.
+**Couverture** : 80 / 116 données réglementaires émises.

@@ -30,12 +30,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   other date in the document is `udt:`. The reference block is also emitted *after*
   the monetary summation, per `HeaderTradeSettlementType`.
 
+- **Allowances and charges** (BG-20 / BG-21 at document level, BG-27 / BG-28 on a
+  line) — `:allowances` and `:charges`, both on the invoice and on a line. All four
+  map to one CII element told apart by `ChargeIndicator`; which list you use decides
+  it, so there is no flag to get wrong. Each entry takes `:amount` (the only
+  required field), `:basis_amount`, `:percent`, `:vat_category`, `:vat_rate`,
+  `:reason` and `:reason_code`.
+- **The remaining document totals** — `:allowance_total` (BT-107),
+  `:charge_total` (BT-108), `:prepaid` (BT-113) and `:rounding` (BT-114) on
+  `:totals`. `:prepaid` is what down payments already covered, so it pairs with
+  `:preceding_invoices`.
+
+  ⚠️ Two things only the schematron enforces, and which the XSD accepts happily:
+  every allowance/charge needs a **`:reason` or `:reason_code`** (`BR-33`,
+  `BR-38`, `BR-42`, `BR-44`) — an amount alone gets the invoice rejected; and
+  document-level entries must **match their totals**, which feed
+  `:tax_basis_total` in turn (`BR-CO-11`, `BR-CO-12`, `BR-CO-13`). That arithmetic
+  is not computed for you.
+
+  Note the wire order, which does not follow the numbering: CII emits
+  `ChargeTotalAmount` **before** `AllowanceTotalAmount`, and
+  `TradeAllowanceChargeType` puts `ReasonCode` before `Reason`.
+
 - **Payment means** (BG-16) — `Facturx.Invoice.payment_means`, a list covering the
   credited account (`:iban` / `:account_name` / `:account_id`, BT-84 / BT-85), its
   institution (`:bic`, BT-86), a direct debit's debited account (`:payer_iban`,
   BT-91) and card details (`:card_id` / `:cardholder_name`, BT-87 / BT-88), plus
   BT-81 / BT-82. **Not** part of the regulatory Flux 1 set — the tax administration
-  does not need them — so the 66/116 count is unchanged; but an invoice without
+  does not need them — so they do not enter the 80/116 count; but an invoice without
   payment details is unusable in practice.
 
   ⚠️ `:card_id` must be **at most 10 characters** (rule `BR-51`, the PCI standard of
@@ -52,7 +74,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   invoice. The legitimate combinations still pass: a down-payment invoice under a
   standard framework (`S1` + `386`), and a final invoice with an ordinary type.
 
-Coverage of the regulatory Flux 1 data set goes from 50/116 to **66/116** — see
+Coverage of the regulatory Flux 1 data set goes from 50/116 to **80/116** — see
 `docs/reference/mapping-cii-flux1.md`.
 
 ### Added (tooling)

@@ -128,6 +128,43 @@ invoice = %Facturx.Invoice{
 }
 ```
 
+### Allowances and charges
+
+Document level (BG-20 / BG-21) and line level (BG-27 / BG-28). All four are the
+same CII element told apart by `ChargeIndicator`; which list you use decides it:
+
+```elixir
+%Facturx.Invoice{
+  allowances: [
+    %{amount: Decimal.new("20.00"), reason: "Remise commerciale", reason_code: "95",
+      basis_amount: Decimal.new("200.00"), percent: Decimal.new("10.00"),
+      vat_category: "S", vat_rate: Decimal.new("20.00")}
+  ],
+  charges: [%{amount: Decimal.new("5.00"), reason: "Frais de port",
+              vat_category: "S", vat_rate: Decimal.new("20.00")}],
+  totals: %{
+    line_total: Decimal.new("200.00"),
+    allowance_total: Decimal.new("20.00"),   # BT-107
+    charge_total: Decimal.new("5.00"),       # BT-108
+    tax_basis_total: Decimal.new("185.00"),  # 200 − 20 + 5
+    tax_total: Decimal.new("37.00"),
+    grand_total: Decimal.new("222.00"),
+    prepaid: Decimal.new("50.00"),           # BT-113 — down payments already paid
+    due_payable: Decimal.new("172.00")
+  }
+}
+```
+
+Lines take the same `:allowances` / `:charges` keys.
+
+> ⚠️ Two rules the XSD accepts but the platform will not:
+>
+> - **Every entry needs a `:reason` or `:reason_code`** (`BR-33`, `BR-38`, `BR-42`,
+>   `BR-44`). An amount on its own gets the invoice rejected.
+> - **Document-level entries must match their totals**, which in turn feed
+>   `:tax_basis_total` (`BR-CO-11`, `BR-CO-12`, `BR-CO-13`). This library does not
+>   compute that arithmetic for you.
+
 ### Payment means
 
 How the invoice is to be paid (BG-16). Not part of the regulatory data set — the
