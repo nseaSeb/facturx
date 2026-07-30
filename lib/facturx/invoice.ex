@@ -7,6 +7,11 @@ defmodule Facturx.Invoice do
   lines, tax breakdown and totals use plain maps with the shapes documented
   below. This models the EN 16931 essentials — enough for a valid CII document —
   not every optional business term.
+
+  Two fields exist for the French e-invoicing mandate and are `nil` (unemitted)
+  by default, so cross-border EN 16931 use is unaffected:
+  `:business_process` (BT-23) and `:tax_due_date_type_code` (BT-8). See
+  `docs/reference/reforme-fr.md`.
   """
 
   @typedoc "A postal address."
@@ -46,13 +51,21 @@ defmodule Facturx.Invoice do
           optional(:line_total) => Decimal.t()
         }
 
-  @typedoc "A VAT breakdown entry (one per rate/category)."
+  @typedoc """
+  A VAT breakdown entry (one per rate/category).
+
+  `:due_date_type_code` is BT-8 for this entry. It overrides the document-level
+  `:tax_due_date_type_code` and only exists because EN 16931 allows the code to
+  differ per entry; French rule S1.13 forbids that, so domestic invoices should
+  use the document-level field instead.
+  """
   @type tax :: %{
           optional(:type) => String.t(),
           optional(:category) => String.t(),
           optional(:rate) => Decimal.t(),
           optional(:basis) => Decimal.t(),
-          optional(:calculated) => Decimal.t()
+          optional(:calculated) => Decimal.t(),
+          optional(:due_date_type_code) => String.t()
         }
 
   @typedoc "Document-level monetary summation."
@@ -66,6 +79,7 @@ defmodule Facturx.Invoice do
 
   @type t :: %__MODULE__{
           profile: Facturx.profile(),
+          business_process: String.t() | nil,
           number: String.t() | nil,
           type_code: String.t(),
           issue_date: Date.t() | nil,
@@ -77,10 +91,14 @@ defmodule Facturx.Invoice do
           delivery_date: Date.t() | nil,
           lines: [line()],
           tax_breakdown: [tax()],
+          tax_due_date_type_code: String.t() | nil,
           totals: totals()
         }
 
   defstruct profile: :en16931,
+            # BT-23 "cadre de facturation" — one of `Facturx.business_processes/0`
+            # (rule G1.02). nil = not emitted.
+            business_process: nil,
             number: nil,
             # 380 = commercial invoice (UNTDID 1001)
             type_code: "380",
@@ -93,5 +111,17 @@ defmodule Facturx.Invoice do
             delivery_date: nil,
             lines: [],
             tax_breakdown: [],
+            # BT-8 (UNTDID 2475, one of `Facturx.vat_point_date_codes/0`) — VAT
+            # point date code, i.e. the "TVA sur les débits" option.
+            #
+            # Convenience for the French case: BT-8 lives per VAT breakdown entry
+            # on the wire, but rule S1.13 requires one value for the whole
+            # invoice, so this is applied to every ram:ApplicableTradeTax that
+            # does not carry its own :due_date_type_code.
+            #
+            # With an empty :tax_breakdown there is nowhere to put it, so it is
+            # not emitted; `build/2` returns {:error, {:vat_point_date_unemittable,
+            # code}} rather than dropping it silently.
+            tax_due_date_type_code: nil,
             totals: %{}
 end

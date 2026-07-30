@@ -3,6 +3,81 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] - 2026-07-30
+
+Support of the two data items the French e-invoicing mandate requires on top of
+plain EN 16931. Both fields default to `nil` and emit nothing, so **generated
+output is unchanged** for callers that don't set them.
+
+### Changed
+- `parse/1` now populates `business_process` (BT-23), which in 0.2.0 was always
+  `nil`. Emitting is unaffected: the French closed-list check is **opt-in**, so
+  `Facturx.parse(xml) |> Facturx.build()` still succeeds on a non-French document
+  (a German ZUGFeRD or Peppol invoice carrying its own BT-23).
+
+### Added
+- `Facturx.Invoice.business_process` — **BT-23** "cadre de facturation"
+  (`ram:BusinessProcessSpecifiedDocumentContextParameter/ram:ID`), mandatory
+  `1..1` for the mandate and previously not emitted at all. This is the field
+  that carries the nature of the transaction (goods / services / mixed) and
+  therefore VAT chargeability.
+- `Facturx.Invoice.tax_due_date_type_code` — **BT-8** VAT point date code
+  (`ram:ApplicableTradeTax/ram:DueDateTypeCode`), i.e. the option to pay VAT on
+  debits. Document-level and replicated onto every VAT breakdown entry, which
+  satisfies rule S1.13 by construction.
+- `Facturx.business_processes/0` — the closed list of 13 BT-23 codes of rule
+  G1.02 (`B1`/`S1`/`M1`, `B2`/`S2`/`M2`, `B4`/`S4`/`M4`, `S5`, `S6`, `B7`/`S7`).
+- `Facturx.vat_point_date_codes/0` — the BT-8 code list, `5` (invoice date, VAT on
+  debits) / `29` (delivery date, goods) / `72` (payment date, VAT on collection).
+  BT-8 is validated against it **by default** (`:validate_vat_point_date`, set it
+  to `false` to reproduce a nonconformant third-party document), returning
+  `{:error, {:invalid_vat_point_date_code, code}}`. The restriction comes from
+  EN 16931 (`BR-CL-06`), not from France, and the enumeration ships in
+  `priv/schematron/en16931/FACTUR-X_EN16931_codedb.xml` (code list `id=28`). Note
+  that `3`/`35`/`432` are the **UBL** (UNTDID 2005) values and are invalid in CII
+  — the XSD accepts them (unrestricted `xs:token`) but the Schematron does not.
+- Per-entry BT-8: a `tax_breakdown` entry may carry its own `:due_date_type_code`,
+  which overrides the document-level field. EN 16931 allows the code to differ
+  between VAT breakdown entries even though French rule S1.13 does not, so parsing
+  hoists a uniform code to the document level and keeps divergent codes per entry
+  instead of collapsing them onto one value.
+
+### Fixed
+- A `:tax_due_date_type_code` with an empty `:tax_breakdown` had nowhere to be
+  emitted and was dropped silently; `build/2` now returns
+  `{:error, {:vat_point_date_unemittable, code}}`.
+- `""` in `:business_process` or `:tax_due_date_type_code` produced an empty
+  element that parsed back as `nil`, breaking the round-trip invariant. Empty
+  strings are now treated as absent, like `nil`.
+- `Facturx.CII.build/2` output is now covered against the bundled XSD by the test
+  suite. That path had never been exercised: element order had only ever been
+  checked by reading the schema.
+- `:validate_business_process` option on `build/2` (and therefore `generate/3`),
+  **defaulting to `false`**, also settable once via
+  `config :facturx, Facturx.CII, validate_business_process: true` (the option
+  overrides the config in both directions). Enabled, an unknown BT-23 code
+  returns `{:error, {:invalid_business_process, code}}`. It is opt-in because
+  BT-23 is an EN 16931 term whose values are *not* restricted to the French list
+  — Peppol, Chorus Pro and other national specifications use their own.
+- `parse/1` reads both fields back, preserving the `parse(build(inv)) == inv`
+  round-trip invariant.
+- Documentation, sourced against the **v3.2 (2026-04-30)** external
+  specifications: `docs/reference/reforme-fr.md` (business reference, primary
+  sources, and three widely repeated claims that the sources contradict),
+  `docs/reference/mapping-cii-flux1.md` (all 116 regulatory Flux 1 data items
+  mapped to CII, with coverage status — 50 emitted), and ADR 0002.
+
+### Notes
+- No new schema is bundled: BT-23 and BT-8 are already declared `minOccurs="0"`
+  in the EN 16931 XSD shipped since 0.2.0.
+- Rule **G1.60** (a `B4`/`S4`/`M4` framework forbids `type_code` `386`/`500`/`503`)
+  is **not** enforced — the closed list is not full BT-23 conformance.
+- There is no `:extended_ctc_fr` profile, deliberately. The PPF profile is
+  declared by the transmitted file's name prefix (`Base_`/`Full_`, rule S1.06),
+  which is the caller's responsibility; the URN
+  `…#conformant#urn.cpro.gouv.fr:1p0:extended-ctc-fr` found in much secondary
+  writing does not appear anywhere in the official specifications.
+
 ## [0.2.0] - 2026-07-24
 
 ### Added
