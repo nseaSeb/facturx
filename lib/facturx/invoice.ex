@@ -39,16 +39,49 @@ defmodule Facturx.Invoice do
           optional(:contact) => contact() | nil
         }
 
-  @typedoc "An invoice line."
+  @typedoc """
+  An invoice line.
+
+  `:gross_price` (BT-148) is the price before any discount, `:price_discount`
+  (BT-147) the discount itself; EN 16931 expects
+  `net_price = gross_price - price_discount`, which is not checked here.
+  `:gross_price` must be set for `:price_discount` to be emitted, the CII price
+  container requiring an amount.
+  """
   @type line :: %{
           optional(:id) => String.t(),
           optional(:name) => String.t(),
           optional(:net_price) => Decimal.t(),
+          optional(:gross_price) => Decimal.t(),
+          optional(:price_discount) => Decimal.t(),
           optional(:quantity) => Decimal.t(),
           optional(:unit) => String.t(),
           optional(:vat_category) => String.t(),
           optional(:vat_rate) => Decimal.t(),
           optional(:line_total) => Decimal.t()
+        }
+
+  @typedoc """
+  A document-level note (BG-1).
+
+  `:subject_code` is BT-21, from UNTDID 4451. Note that CII orders the content
+  before the code, unlike the business-term numbering.
+  """
+  @type note :: %{
+          optional(:content) => String.t(),
+          optional(:subject_code) => String.t()
+        }
+
+  @typedoc """
+  An invoicing period (BG-14).
+
+  `BR-29` requires the end to be on or after the start. That rule is flagged
+  `warning` in the bundled schematron, so an inverted period yields
+  `{:ok, {:valid_with_warnings, …}}` rather than an error — it is not checked here.
+  """
+  @type period :: %{
+          optional(:start_date) => Date.t(),
+          optional(:end_date) => Date.t()
         }
 
   @typedoc """
@@ -58,6 +91,10 @@ defmodule Facturx.Invoice do
   `:tax_due_date_type_code` and only exists because EN 16931 allows the code to
   differ per entry; French rule S1.13 forbids that, so domestic invoices should
   use the document-level field instead.
+
+  `:exemption_reason` (BT-120) is free text and `:exemption_reason_code` (BT-121) a
+  code from the EN 16931 VATEX list; both apply to categories such as `E`, `AE`,
+  `K` or `G`.
   """
   @type tax :: %{
           optional(:type) => String.t(),
@@ -65,7 +102,9 @@ defmodule Facturx.Invoice do
           optional(:rate) => Decimal.t(),
           optional(:basis) => Decimal.t(),
           optional(:calculated) => Decimal.t(),
-          optional(:due_date_type_code) => String.t()
+          optional(:due_date_type_code) => String.t(),
+          optional(:exemption_reason) => String.t(),
+          optional(:exemption_reason_code) => String.t()
         }
 
   @typedoc "Document-level monetary summation."
@@ -85,10 +124,12 @@ defmodule Facturx.Invoice do
           issue_date: Date.t() | nil,
           due_date: Date.t() | nil,
           currency: String.t(),
+          notes: [note()],
           seller: party() | nil,
           buyer: party() | nil,
           ship_to: party() | nil,
           delivery_date: Date.t() | nil,
+          billing_period: period() | nil,
           lines: [line()],
           tax_breakdown: [tax()],
           tax_due_date_type_code: String.t() | nil,
@@ -105,10 +146,15 @@ defmodule Facturx.Invoice do
             issue_date: nil,
             due_date: nil,
             currency: "EUR",
+            # BG-1 — document-level notes (BT-22 content, BT-21 subject code)
+            notes: [],
             seller: nil,
             buyer: nil,
             ship_to: nil,
             delivery_date: nil,
+            # BG-14 — invoicing period. One of BT-72 / BG-14 / BG-26 is required by
+            # BR-FX-EN-04 on anything but a down-payment invoice.
+            billing_period: nil,
             lines: [],
             tax_breakdown: [],
             # BT-8 (UNTDID 2475, one of `Facturx.vat_point_date_codes/0`) — VAT

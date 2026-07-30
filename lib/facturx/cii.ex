@@ -169,7 +169,17 @@ defmodule Facturx.CII do
     e("rsm:ExchangedDocument", [
       t("ram:ID", inv.number),
       t("ram:TypeCode", inv.type_code),
-      date_el("ram:IssueDateTime", inv.issue_date)
+      date_el("ram:IssueDateTime", inv.issue_date),
+      Enum.map(inv.notes, &note/1)
+    ])
+  end
+
+  # NoteType orders Content before SubjectCode — the reverse of the BT numbering
+  # (BT-22 then BT-21).
+  defp note(n) do
+    e("ram:IncludedNote", [
+      t("ram:Content", n[:content]),
+      t("ram:SubjectCode", n[:subject_code])
     ])
   end
 
@@ -190,6 +200,8 @@ defmodule Facturx.CII do
       e("ram:AssociatedDocumentLineDocument", [t("ram:LineID", line[:id])]),
       e("ram:SpecifiedTradeProduct", [t("ram:Name", line[:name])]),
       e("ram:SpecifiedLineTradeAgreement", [
+        # GrossPrice precedes NetPrice in LineTradeAgreementType.
+        gross_price(line),
         e("ram:NetPriceProductTradePrice", [amount("ram:ChargeAmount", line[:net_price])])
       ]),
       e("ram:SpecifiedLineTradeDelivery", [
@@ -206,6 +218,31 @@ defmodule Facturx.CII do
           amount("ram:LineTotalAmount", line[:line_total])
         ])
       ])
+    ])
+  end
+
+  # BT-148 / BT-147. TradePriceType requires ChargeAmount, so the container is only
+  # emitted when a gross price is given — a lone discount would be invalid.
+  defp gross_price(line) do
+    case line[:gross_price] do
+      nil ->
+        nil
+
+      gross ->
+        e("ram:GrossPriceProductTradePrice", [
+          amount("ram:ChargeAmount", gross),
+          price_discount(line[:price_discount])
+        ])
+    end
+  end
+
+  defp price_discount(nil), do: nil
+
+  defp price_discount(value) do
+    e("ram:AppliedTradeAllowanceCharge", [
+      # false = allowance (a discount) rather than a charge.
+      wrap("ram:ChargeIndicator", t("udt:Indicator", "false")),
+      amount("ram:ActualAmount", value)
     ])
   end
 
@@ -229,10 +266,26 @@ defmodule Facturx.CII do
       [t("ram:InvoiceCurrencyCode", inv.currency)] ++
         Enum.map(inv.tax_breakdown, &trade_tax(&1, inv.tax_due_date_type_code)) ++
         [
+          # BillingSpecifiedPeriod sits between ApplicableTradeTax and
+          # SpecifiedTradePaymentTerms in HeaderTradeSettlementType.
+          billing_period(inv.billing_period),
           payment_terms(inv.due_date),
           monetary_summation(inv.totals, inv.currency)
         ]
     )
+  end
+
+  # BG-14 (BT-73 / BT-74).
+  defp billing_period(nil), do: nil
+
+  defp billing_period(period) do
+    case compact([
+           date_el("ram:StartDateTime", period[:start_date]),
+           date_el("ram:EndDateTime", period[:end_date])
+         ]) do
+      [] -> nil
+      children -> {"ram:BillingSpecifiedPeriod", [], children}
+    end
   end
 
   # BT-8: the entry's own code wins, else the document-level one (rule S1.13 makes
@@ -242,8 +295,12 @@ defmodule Facturx.CII do
     e("ram:ApplicableTradeTax", [
       amount("ram:CalculatedAmount", tax[:calculated]),
       t("ram:TypeCode", tax[:type] || "VAT"),
+      # BT-120 and BT-121 are not adjacent in TradeTaxType: the reason comes before
+      # BasisAmount, the code after CategoryCode.
+      t("ram:ExemptionReason", tax[:exemption_reason]),
       amount("ram:BasisAmount", tax[:basis]),
       t("ram:CategoryCode", tax[:category]),
+      t("ram:ExemptionReasonCode", tax[:exemption_reason_code]),
       t("ram:DueDateTypeCode", tax[:due_date_type_code] || doc_code),
       t("ram:RateApplicablePercent", decimal(tax[:rate]))
     ])
@@ -383,6 +440,11 @@ defmodule Facturx.CII do
           "ram:BusinessProcessSpecifiedDocumentContextParameter",
           "ram:ID"
         ]),
+      notes:
+        root
+        |> find("rsm:ExchangedDocument")
+        |> find_all("ram:IncludedNote")
+        |> Enum.map(&parse_note/1),
       number: path_text(root, ["rsm:ExchangedDocument", "ram:ID"]),
       type_code: path_text(root, ["rsm:ExchangedDocument", "ram:TypeCode"]) || "380",
       issue_date:
@@ -406,6 +468,7 @@ defmodule Facturx.CII do
             "udt:DateTimeString"
           ])
         ),
+      billing_period: parse_period(find(settlement, "ram:BillingSpecifiedPeriod")),
       seller: parse_party(find(agreement, "ram:SellerTradeParty")),
       buyer: parse_party(find(agreement, "ram:BuyerTradeParty")),
       ship_to: parse_party(find(delivery, "ram:ShipToTradeParty")),
@@ -453,6 +516,23 @@ defmodule Facturx.CII do
             "ram:ChargeAmount"
           ])
         ),
+      gross_price:
+        num(
+          path_text(li, [
+            "ram:SpecifiedLineTradeAgreement",
+            "ram:GrossPriceProductTradePrice",
+            "ram:ChargeAmount"
+          ])
+        ),
+      price_discount:
+        num(
+          path_text(li, [
+            "ram:SpecifiedLineTradeAgreement",
+            "ram:GrossPriceProductTradePrice",
+            "ram:AppliedTradeAllowanceCharge",
+            "ram:ActualAmount"
+          ])
+        ),
       quantity: num(node_text(qty_node)),
       unit: attr(qty_node, "unitCode"),
       vat_category: child_text(tax, "ram:CategoryCode"),
@@ -475,8 +555,29 @@ defmodule Facturx.CII do
       rate: num(child_text(tt, "ram:RateApplicablePercent")),
       basis: num(child_text(tt, "ram:BasisAmount")),
       calculated: num(child_text(tt, "ram:CalculatedAmount")),
-      due_date_type_code: child_text(tt, "ram:DueDateTypeCode")
+      due_date_type_code: child_text(tt, "ram:DueDateTypeCode"),
+      exemption_reason: child_text(tt, "ram:ExemptionReason"),
+      exemption_reason_code: child_text(tt, "ram:ExemptionReasonCode")
     })
+  end
+
+  defp parse_note(n) do
+    prune(%{
+      content: child_text(n, "ram:Content"),
+      subject_code: child_text(n, "ram:SubjectCode")
+    })
+  end
+
+  defp parse_period(nil), do: nil
+
+  defp parse_period(p) do
+    case prune(%{
+           start_date: parse_date(path_text(p, ["ram:StartDateTime", "udt:DateTimeString"])),
+           end_date: parse_date(path_text(p, ["ram:EndDateTime", "udt:DateTimeString"]))
+         }) do
+      empty when empty == %{} -> nil
+      period -> period
+    end
   end
 
   defp parse_party(nil), do: nil

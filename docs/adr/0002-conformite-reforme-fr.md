@@ -158,21 +158,25 @@ défaut mais reste désactivable.
 
 ### Reste à faire (hors périmètre de ce jalon)
 
-Sur les 116 données réglementaires du Flux 1, 50 sont émises. L'[Annexe B](../reference/mapping-cii-flux1.md)
-détaille chaque cas ; par priorité :
+Sur les 116 données réglementaires du Flux 1, **62 sont émises** (50 au moment de
+la décision initiale). L'[Annexe B](../reference/mapping-cii-flux1.md) détaille
+chaque cas.
 
-1. **`BT-148` (prix brut de l'article) — seul trou inconditionnel.** `1..1` dans
-   `BG-29` qui est `1..1` : toute facture avec des lignes devra le porter en
-   trajectoire CIBLE. Non bloquant au démarrage, et peu coûteux (en l'absence de
-   rabais `BT-147`, le prix brut égale le prix net déjà émis).
-2. **Blocs optionnels dont on voudra l'usage** — chacun impose son contenu
+**Comblé depuis** : `BT-148`/`BT-147` (prix brut et rabais sur prix), `BG-1`
+(notes), `BG-14` (période de facturation), `BT-120`/`BT-121` (motif d'exonération
+de TVA). `BT-148` était le **seul trou inconditionnel** — obligatoire dans un
+groupe obligatoire — donc une facture produite par la lib ne peut plus être
+structurellement incomplète au regard du socle.
+
+Reste, par priorité :
+
+1. **Blocs optionnels dont on voudra l'usage** — chacun impose son contenu
    obligatoire : référence à une facture antérieure (`BG-3`, utile aux factures
-   d'acompte), notes (`BG-1`), période de facturation (`BG-14`), remises et
-   charges document (`BG-20`/`BG-21`) puis ligne (`BG-27`/`BG-28`), motif
-   d'exonération de TVA (`BT-120`/`BT-121`), représentant fiscal (`BG-11`),
-   assujetti unique (`BT-29d`), adresse de livraison complète
-   (`BT-76`/`BT-79`/`BT-165`).
-3. **Hors socle réglementaire mais fréquemment attendu** : moyens de paiement /
+   définitives après acompte, donc aux cadres `B4`/`S4`/`M4`), remises et charges
+   document (`BG-20`/`BG-21`) puis ligne (`BG-27`/`BG-28`), période de ligne
+   (`BG-26`), représentant fiscal (`BG-11`), assujetti unique (`BT-29d`), adresse
+   de livraison complète (`BT-76`/`BT-79`/`BT-165`).
+2. **Hors socle réglementaire mais fréquemment attendu** : moyens de paiement /
    IBAN (`TradeSettlementPaymentMeansType` est dans le XSD embarqué, jamais émis).
 
 Puis, si le besoin apparaît : les `EXT-FR-FE-*` de niveau ligne (tous en

@@ -332,6 +332,175 @@ defmodule Facturx.CIITest do
     end
   end
 
+  # Blocks added after the first French-mandate pass. All live in the bundled XSD
+  # already; the risk is element order, which validate_xsd/2 is what pins.
+  describe "notes, invoicing period, gross price and VAT exemption" do
+    defp enriched do
+      %{
+        sample_invoice()
+        | notes: [
+            %{content: "Escompte 2% sous 8 jours", subject_code: "AAB"},
+            %{content: "Sans code sujet"}
+          ],
+          billing_period: %{start_date: ~D[2026-07-01], end_date: ~D[2026-07-31]}
+      }
+    end
+
+    test "everything together still validates against the XSD" do
+      {:ok, xml} = Facturx.build(enriched())
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+    end
+
+    test "notes keep CII's Content-before-SubjectCode order (BT-22 then BT-21)" do
+      {:ok, xml} = Facturx.build(enriched())
+
+      assert xml =~
+               "<ram:IncludedNote><ram:Content>Escompte 2% sous 8 jours</ram:Content>" <>
+                 "<ram:SubjectCode>AAB</ram:SubjectCode></ram:IncludedNote>"
+
+      # a note without a subject code is still valid
+      assert xml =~
+               "<ram:IncludedNote><ram:Content>Sans code sujet</ram:Content></ram:IncludedNote>"
+    end
+
+    test "the invoicing period sits after the VAT breakdown" do
+      {:ok, xml} = Facturx.build(enriched())
+
+      tax = :binary.match(xml, "ram:ApplicableHeaderTradeSettlement")
+      period = :binary.match(xml, "ram:BillingSpecifiedPeriod")
+      terms = :binary.match(xml, "ram:SpecifiedTradePaymentTerms")
+      assert elem(tax, 0) < elem(period, 0)
+      assert elem(period, 0) < elem(terms, 0)
+    end
+
+    test "a partial period emits only the date given" do
+      inv = %{sample_invoice() | billing_period: %{start_date: ~D[2026-07-01]}}
+      {:ok, xml} = Facturx.build(inv)
+
+      assert xml =~ "ram:StartDateTime"
+      refute xml =~ "ram:EndDateTime"
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "an empty period map emits nothing rather than an empty container" do
+      {:ok, xml} = Facturx.build(%{sample_invoice() | billing_period: %{}})
+
+      refute xml =~ "BillingSpecifiedPeriod"
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+    end
+
+    test "gross price precedes net price, with the discount as an allowance" do
+      inv =
+        put_in(sample_invoice().lines, [
+          %{
+            id: "1",
+            name: "P",
+            net_price: Decimal.new("90.00"),
+            gross_price: Decimal.new("100.00"),
+            price_discount: Decimal.new("10.00"),
+            quantity: Decimal.new("2"),
+            unit: "C62",
+            vat_category: "S",
+            vat_rate: Decimal.new("20.00"),
+            line_total: Decimal.new("180.00")
+          }
+        ])
+
+      {:ok, xml} = Facturx.build(inv)
+
+      gross = :binary.match(xml, "ram:GrossPriceProductTradePrice")
+      net = :binary.match(xml, "ram:NetPriceProductTradePrice")
+      assert elem(gross, 0) < elem(net, 0)
+      # false = allowance, not a charge
+      assert xml =~
+               "<ram:ChargeIndicator><udt:Indicator>false</udt:Indicator></ram:ChargeIndicator>"
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "a discount without a gross price is dropped, since CII needs the amount" do
+      inv =
+        put_in(sample_invoice().lines, [
+          %{
+            id: "1",
+            name: "P",
+            net_price: Decimal.new("90.00"),
+            # no :gross_price, so this has nowhere to go
+            price_discount: Decimal.new("10.00"),
+            quantity: Decimal.new("2"),
+            unit: "C62",
+            vat_category: "S",
+            vat_rate: Decimal.new("20.00"),
+            line_total: Decimal.new("180.00")
+          }
+        ])
+
+      {:ok, xml} = Facturx.build(inv)
+
+      refute xml =~ "GrossPriceProductTradePrice"
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+    end
+
+    # Exempt throughout, lines included: BR-E-01 requires a line in category E for
+    # an E breakdown to be legitimate, and the schematron does check that.
+    test "BT-120 and BT-121 land on either side of BasisAmount/CategoryCode" do
+      inv = %{
+        sample_invoice()
+        | tax_due_date_type_code: nil,
+          lines: [
+            %{
+              id: "1",
+              name: "Livraison intracommunautaire",
+              net_price: Decimal.new("200.00"),
+              quantity: Decimal.new("1"),
+              unit: "C62",
+              vat_category: "E",
+              vat_rate: Decimal.new("0.00"),
+              line_total: Decimal.new("200.00")
+            }
+          ],
+          tax_breakdown: [
+            %{
+              type: "VAT",
+              category: "E",
+              rate: Decimal.new("0.00"),
+              basis: Decimal.new("200.00"),
+              calculated: Decimal.new("0.00"),
+              exemption_reason: "Exonération art. 262 ter I",
+              exemption_reason_code: "VATEX-EU-IC"
+            }
+          ],
+          totals: %{
+            line_total: Decimal.new("200.00"),
+            tax_basis_total: Decimal.new("200.00"),
+            tax_total: Decimal.new("0.00"),
+            grand_total: Decimal.new("200.00"),
+            due_payable: Decimal.new("200.00")
+          }
+      }
+
+      {:ok, xml} = Facturx.build(inv)
+
+      assert xml =~
+               "<ram:TypeCode>VAT</ram:TypeCode>" <>
+                 "<ram:ExemptionReason>Exonération art. 262 ter I</ram:ExemptionReason>" <>
+                 "<ram:BasisAmount>200.00</ram:BasisAmount>" <>
+                 "<ram:CategoryCode>E</ram:CategoryCode>" <>
+                 "<ram:ExemptionReasonCode>VATEX-EU-IC</ram:ExemptionReasonCode>"
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "the whole enriched invoice round-trips" do
+      inv = enriched()
+      {:ok, xml} = Facturx.build(inv)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+  end
+
   # "" is a plausible value from a form field or a NOT NULL DEFAULT '' column.
   describe "empty-string codes are treated as absent" do
     test "an empty BT-23 emits no element and round-trips" do

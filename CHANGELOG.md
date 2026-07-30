@@ -5,10 +5,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
-Tooling and tests only — the published package is unchanged apart from README
-wording, so no release is required.
-
 ### Added
+- **Notes** (BG-1) — `Facturx.Invoice.notes`, a list of
+  `%{content: …, subject_code: …}` (BT-22 / BT-21). CII orders the content before
+  the code, the reverse of the BT numbering.
+- **Invoicing period** (BG-14) — `Facturx.Invoice.billing_period`, a
+  `%{start_date: …, end_date: …}` (BT-73 / BT-74). Either date may stand alone; an
+  empty map emits nothing. Satisfies `BR-FX-EN-04` as an alternative to BT-72.
+- **Gross price and price discount** (BT-148 / BT-147) — `:gross_price` and
+  `:price_discount` on a line. `BT-148` was the **only unconditional gap** left in
+  the regulatory core: mandatory inside `BG-29`, which is itself mandatory. A
+  discount without a gross price is dropped, the CII price container requiring an
+  amount.
+- **VAT exemption reason** (BT-120 / BT-121) — `:exemption_reason` and
+  `:exemption_reason_code` on a VAT breakdown entry. Note that `BR-E-01` also wants
+  a line in the matching exempt category; the XSD cannot see that, the schematron
+  can, and a test now pins it.
+
+Coverage of the regulatory Flux 1 data set goes from 50/116 to **62/116** — see
+`docs/reference/mapping-cii-flux1.md`.
+
+### Added (tooling)
 - `docker/` — a Saxon image for the bundled Schematron. It starts Saxon with
   `--insecure` (required for the `document()` call that loads the code-list DB)
   and bakes the DB in, so validation no longer fetches it over the network on

@@ -262,6 +262,94 @@ defmodule Facturx.ValidateTest do
       assert Enum.any?(errors, &(&1.message =~ "DueDateTypeCode"))
     end
 
+    test "notes, invoicing period and gross price break no rule", %{opts: opts} do
+      {:ok, xml} =
+        Facturx.build(
+          invoice(%{
+            notes: [%{content: "Escompte 2% sous 8 jours", subject_code: "AAB"}],
+            billing_period: %{start_date: ~D[2026-07-01], end_date: ~D[2026-07-31]},
+            lines: [
+              %{
+                id: "1",
+                name: "Prestation",
+                net_price: Decimal.new("90.00"),
+                gross_price: Decimal.new("100.00"),
+                price_discount: Decimal.new("10.00"),
+                quantity: Decimal.new("2"),
+                unit: "C62",
+                vat_category: "S",
+                vat_rate: Decimal.new("20.00"),
+                line_total: Decimal.new("180.00")
+              }
+            ],
+            tax_breakdown: [
+              %{
+                type: "VAT",
+                category: "S",
+                rate: Decimal.new("20.00"),
+                basis: Decimal.new("180.00"),
+                calculated: Decimal.new("36.00")
+              }
+            ],
+            totals: %{
+              line_total: Decimal.new("180.00"),
+              tax_basis_total: Decimal.new("180.00"),
+              tax_total: Decimal.new("36.00"),
+              grand_total: Decimal.new("216.00"),
+              due_payable: Decimal.new("216.00")
+            }
+          })
+        )
+
+      assert {:ok, :valid} = Facturx.validate(xml, opts)
+    end
+
+    # BR-E-01 wants a line in category E behind an exempt VAT breakdown. The XSD
+    # cannot see that, so only this test protects the BT-120/BT-121 path from
+    # producing a plausible-looking but rejectable invoice.
+    test "an exempt invoice with BT-120/BT-121 satisfies BR-E-01", %{opts: opts} do
+      exempt = %{
+        lines: [
+          %{
+            id: "1",
+            name: "Livraison intracommunautaire",
+            net_price: Decimal.new("200.00"),
+            quantity: Decimal.new("1"),
+            unit: "C62",
+            vat_category: "E",
+            vat_rate: Decimal.new("0.00"),
+            line_total: Decimal.new("200.00")
+          }
+        ],
+        tax_breakdown: [
+          %{
+            type: "VAT",
+            category: "E",
+            rate: Decimal.new("0.00"),
+            basis: Decimal.new("200.00"),
+            calculated: Decimal.new("0.00"),
+            exemption_reason: "Exonération art. 262 ter I",
+            exemption_reason_code: "VATEX-EU-IC"
+          }
+        ],
+        totals: %{
+          line_total: Decimal.new("200.00"),
+          tax_basis_total: Decimal.new("200.00"),
+          tax_total: Decimal.new("0.00"),
+          grand_total: Decimal.new("200.00"),
+          due_payable: Decimal.new("200.00")
+        }
+      }
+
+      {:ok, xml} = Facturx.build(invoice(exempt))
+      assert {:ok, :valid} = Facturx.validate(xml, opts)
+
+      # ... and dropping the exempt line is what BR-E-01 rejects
+      {:ok, bad} = Facturx.build(invoice(%{exempt | lines: []}))
+      assert {:error, {:invalid, errors}} = Facturx.validate(bad, opts)
+      assert Enum.any?(errors, &(&1.message =~ "BR-E-01"))
+    end
+
     # Pins the severity split against the real ruleset: without delivery data CII
     # forces an empty ram:ApplicableHeaderTradeDelivery, which PEPPOL-EN16931-R008
     # flags as a warning. That must stay non-blocking.

@@ -101,6 +101,41 @@ invoice = %Facturx.Invoice{
 {:ok, invoice} = Facturx.parse(xml)
 ```
 
+### Notes, periods, gross prices, VAT exemption
+
+```elixir
+%Facturx.Invoice{
+  # BG-1 — CII puts the content before the subject code (BT-22 then BT-21)
+  notes: [%{content: "Escompte 2% sous 8 jours", subject_code: "AAB"}],
+  # BG-14 — either date may stand alone
+  billing_period: %{start_date: ~D[2026-07-01], end_date: ~D[2026-07-31]},
+  lines: [
+    %{
+      net_price: Decimal.new("90.00"),
+      gross_price: Decimal.new("100.00"),    # BT-148, price before discount
+      price_discount: Decimal.new("10.00"),  # BT-147
+      # ...
+    }
+  ],
+  tax_breakdown: [
+    %{
+      category: "E",
+      exemption_reason: "Exonération art. 262 ter I",  # BT-120
+      exemption_reason_code: "VATEX-EU-IC",            # BT-121
+      # ...
+    }
+  ]
+}
+```
+
+Two things the XSD will not catch, so worth knowing:
+
+- `:price_discount` needs `:gross_price` — the CII price container requires an
+  amount, so a lone discount is dropped.
+- An exempt VAT breakdown needs a line in the matching category (`BR-E-01`), and a
+  period needs its end on or after its start (`BR-29`). Both are schematron rules;
+  see the Schematron section below to check them.
+
 ### French mandate: invoicing framework and VAT point date
 
 Two data items are required for domestic French invoicing on top of plain
