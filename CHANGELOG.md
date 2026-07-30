@@ -22,7 +22,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   a line in the matching exempt category; the XSD cannot see that, the schematron
   can, and a test now pins it.
 
-Coverage of the regulatory Flux 1 data set goes from 50/116 to **62/116** — see
+- **Preceding invoice references** (BG-3) — `Facturx.Invoice.preceding_invoices`, a
+  list of `%{number: …, issue_date: …}` (BT-25 / BT-26). This is what a final
+  invoice points at to net off down payments already invoiced, so it goes with the
+  `B4`/`S4`/`M4` invoicing frameworks. Careful with BT-26: `FormattedIssueDateTime`
+  is a `qdt:FormattedDateTimeType`, so its child is `qdt:DateTimeString` — every
+  other date in the document is `udt:`. The reference block is also emitted *after*
+  the monetary summation, per `HeaderTradeSettlementType`.
+
+Coverage of the regulatory Flux 1 data set goes from 50/116 to **66/116** — see
 `docs/reference/mapping-cii-flux1.md`.
 
 ### Added (tooling)

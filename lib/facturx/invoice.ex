@@ -62,6 +62,22 @@ defmodule Facturx.Invoice do
         }
 
   @typedoc """
+  A reference to a preceding invoice (BG-3).
+
+  What a final invoice points at to net off the down payments already invoiced.
+  Required in that case by the French mandate, whose invoicing framework codes
+  `B4`/`S4`/`M4` mean exactly "final invoice after a down payment".
+
+  `:number` is BT-25, `:issue_date` BT-26. Note that rule `G1.60` forbids pairing
+  a `B4`/`S4`/`M4` framework with `type_code` `386`, `500` or `503` — that cross
+  constraint is **not** enforced by this library.
+  """
+  @type preceding_invoice :: %{
+          optional(:number) => String.t(),
+          optional(:issue_date) => Date.t()
+        }
+
+  @typedoc """
   A document-level note (BG-1).
 
   `:subject_code` is BT-21, from UNTDID 4451. Note that CII orders the content
@@ -130,6 +146,7 @@ defmodule Facturx.Invoice do
           ship_to: party() | nil,
           delivery_date: Date.t() | nil,
           billing_period: period() | nil,
+          preceding_invoices: [preceding_invoice()],
           lines: [line()],
           tax_breakdown: [tax()],
           tax_due_date_type_code: String.t() | nil,
@@ -155,6 +172,9 @@ defmodule Facturx.Invoice do
             # BG-14 — invoicing period. One of BT-72 / BG-14 / BG-26 is required by
             # BR-FX-EN-04 on anything but a down-payment invoice.
             billing_period: nil,
+            # BG-3 — preceding invoice references, i.e. the down payment invoices a
+            # final invoice nets off. Goes with the B4/S4/M4 frameworks.
+            preceding_invoices: [],
             lines: [],
             tax_breakdown: [],
             # BT-8 (UNTDID 2475, one of `Facturx.vat_point_date_codes/0`) — VAT

@@ -501,6 +501,66 @@ defmodule Facturx.CIITest do
     end
   end
 
+  # BG-3 — what a final invoice points at to net off earlier down payments, i.e.
+  # the B4/S4/M4 frameworks.
+  describe "preceding invoice references (BG-3)" do
+    defp final_invoice do
+      %{
+        sample_invoice()
+        | business_process: "S4",
+          preceding_invoices: [
+            %{number: "F-2026-042", issue_date: ~D[2026-06-15]},
+            # BT-26 is optional, so a bare number must work
+            %{number: "F-2026-043"}
+          ]
+      }
+    end
+
+    test "validates and round-trips" do
+      inv = final_invoice()
+      {:ok, xml} = Facturx.build(inv)
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    # FormattedIssueDateTime is qdt:FormattedDateTimeType, so its child is
+    # qdt:DateTimeString — every other date in the document is udt. Getting this
+    # wrong produces XML the XSD rejects.
+    test "BT-26 uses the qdt namespace, not udt" do
+      {:ok, xml} = Facturx.build(final_invoice())
+
+      assert xml =~
+               "<ram:FormattedIssueDateTime>" <>
+                 ~s(<qdt:DateTimeString format="102">20260615</qdt:DateTimeString>) <>
+                 "</ram:FormattedIssueDateTime>"
+
+      refute xml =~ "<ram:FormattedIssueDateTime><udt:"
+    end
+
+    test "the reference sits after the monetary summation, as the sequence demands" do
+      {:ok, xml} = Facturx.build(final_invoice())
+
+      summation = :binary.match(xml, "SpecifiedTradeSettlementHeaderMonetarySummation")
+      ref = :binary.match(xml, "ram:InvoiceReferencedDocument")
+      assert elem(summation, 0) < elem(ref, 0)
+    end
+
+    test "several references are emitted, order preserved" do
+      {:ok, xml} = Facturx.build(final_invoice())
+
+      assert length(String.split(xml, "<ram:InvoiceReferencedDocument>")) - 1 == 2
+      first = :binary.match(xml, "F-2026-042")
+      second = :binary.match(xml, "F-2026-043")
+      assert elem(first, 0) < elem(second, 0)
+    end
+
+    test "no reference emits nothing" do
+      {:ok, xml} = Facturx.build(sample_invoice())
+      refute xml =~ "InvoiceReferencedDocument"
+    end
+  end
+
   # "" is a plausible value from a form field or a NOT NULL DEFAULT '' column.
   describe "empty-string codes are treated as absent" do
     test "an empty BT-23 emits no element and round-trips" do

@@ -20,7 +20,7 @@ Table de correspondance complète entre les **données réglementaires du Flux 1
 
 ## Ce que les « — » impliquent réellement
 
-Les 54 données non émises se répartissent en catégories très inégales en gravité.
+Les 50 données non émises se répartissent en catégories très inégales en gravité.
 C'est cette lecture, plus que le décompte brut, qui dit où on en est.
 
 ### 1. Plus aucun trou inconditionnel
@@ -41,7 +41,6 @@ voudra l'émettre, il faudra émettre **tout** son contenu obligatoire :
 
 | Bloc (card.) | Données obligatoires à fournir avec |
 |---|---|
-| `BG-3` FACTURE ANTÉRIEURE (`0..n`) | `BT-25` |
 | `BT-29d` assujetti unique (`0..1`) | `BT-29d-1` (schéma, `0231`) |
 | `BG-11` REPRÉSENTANT FISCAL (`0..1`) | `BT-63`, `BT-63-0` |
 | `BG-20` REMISES document (`0..n`) | `BT-92`, `BT-95`, `BT-95-0` |
@@ -81,10 +80,10 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BG-2` | 1..1 | D | CONTROLE DU PROCESSUS | ✅ | `/rsm:ExchangedDocumentContext` |
 | `BT-23` | 1..1 | D | Type de processus métier (cadre de facturation) | ✅ | `/rsm:ExchangedDocumentContext/ram:BusinessProcessSpecifiedDocumentContextParameter/ram:ID` |
 | `BT-24` | 1..1 | D | Type de profil (e-invoicing, e-reporting, facture etc..) | ✅ | `/rsm:ExchangedDocumentContext/ram:GuidelineSpecifiedDocumentContextParameter/ram:ID` |
-| `BG-3` | 0..n | D | RÉFÉRENCE À UNE FACTURE ANTÉRIEURE | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:InvoiceReferencedDocument` |
-| `BT-25` | 1..1 | D | Numéro de la facture antérieure | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:InvoiceReferencedDocument/ram:IssuerAssignedID` |
-| `BT-26` | 0..1 | C | Date d'émission de facture antérieure | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:InvoiceReferencedDocument/ram:FormattedIssueDateTime/qdt:DateTimeString` |
-| `BT-26-1` | 0..1 | C | Format date | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:InvoiceReferencedDocument/ram:FormattedIssueDateTime/qdt:DateTimeString@format` |
+| `BG-3` | 0..n | D | RÉFÉRENCE À UNE FACTURE ANTÉRIEURE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:InvoiceReferencedDocument` |
+| `BT-25` | 1..1 | D | Numéro de la facture antérieure | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:InvoiceReferencedDocument/ram:IssuerAssignedID` |
+| `BT-26` | 0..1 | C | Date d'émission de facture antérieure | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:InvoiceReferencedDocument/ram:FormattedIssueDateTime/qdt:DateTimeString` |
+| `BT-26-1` | 0..1 | C | Format date | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:InvoiceReferencedDocument/ram:FormattedIssueDateTime/qdt:DateTimeString@format` |
 | `BG-4` | 1..1 | D | VENDEUR | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty` |
 | `BT-29d` | 0..1 | D | Identifiant du vendeur (Assujetti unique) | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty/ram:GlobalID` |
 | `BT-29d-1` | 1..1 | D | Identifiant du schéma (Assujetti unique) | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty/ram:GlobalID/@schemeID` |
@@ -184,4 +183,4 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BG-31` | 1..1 | C | INFORMATION SUR L'ARTICLE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedTradeProduct` |
 | `BT-153` | 1..1 | C | Nom de l'article | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedTradeProduct/ram:Name` |
 
-**Couverture** : 62 / 116 données réglementaires émises.
+**Couverture** : 66 / 116 données réglementaires émises.

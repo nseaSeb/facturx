@@ -128,6 +128,26 @@ invoice = %Facturx.Invoice{
 }
 ```
 
+### Down payments: referencing a preceding invoice
+
+A final invoice nets off the down payments already invoiced, and points back at
+them (BG-3). This is the counterpart of the `B4`/`S4`/`M4` invoicing frameworks:
+
+```elixir
+%Facturx.Invoice{
+  business_process: "S4",   # BT-23 — final invoice after a down payment
+  preceding_invoices: [
+    %{number: "F-2026-042", issue_date: ~D[2026-06-15]},  # BT-25 / BT-26
+    %{number: "F-2026-043"}                               # BT-26 is optional
+  ],
+  # ...
+}
+```
+
+Rule `G1.60` forbids pairing a `B4`/`S4`/`M4` framework with `type_code` `386`,
+`500` or `503` — a cross constraint this library does **not** enforce, and which
+the EN 16931 schematron does not carry either, being French.
+
 Two things the XSD will not catch, so worth knowing:
 
 - `:price_discount` needs `:gross_price` — the CII price container requires an

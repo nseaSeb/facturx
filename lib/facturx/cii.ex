@@ -263,6 +263,8 @@ defmodule Facturx.CII do
   defp header_settlement(inv) do
     e(
       "ram:ApplicableHeaderTradeSettlement",
+      # InvoiceReferencedDocument comes *after* the summation in
+      # HeaderTradeSettlementType, counter-intuitive as that reads.
       [t("ram:InvoiceCurrencyCode", inv.currency)] ++
         Enum.map(inv.tax_breakdown, &trade_tax(&1, inv.tax_due_date_type_code)) ++
         [
@@ -271,8 +273,19 @@ defmodule Facturx.CII do
           billing_period(inv.billing_period),
           payment_terms(inv.due_date),
           monetary_summation(inv.totals, inv.currency)
-        ]
+        ] ++
+        Enum.map(inv.preceding_invoices, &preceding_invoice/1)
     )
+  end
+
+  # BG-3 (BT-25 / BT-26).
+  defp preceding_invoice(ref) do
+    e("ram:InvoiceReferencedDocument", [
+      t("ram:IssuerAssignedID", ref[:number]),
+      # FormattedIssueDateTime is qdt:FormattedDateTimeType, so its child lives in
+      # the qdt namespace — unlike every other date in this document, which is udt.
+      qdt_date_el("ram:FormattedIssueDateTime", ref[:issue_date])
+    ])
   end
 
   # BG-14 (BT-73 / BT-74).
@@ -395,6 +408,13 @@ defmodule Facturx.CII do
     {name, [], [{"udt:DateTimeString", [{"format", "102"}], [Calendar.strftime(d, "%Y%m%d")]}]}
   end
 
+  # Same shape, qdt namespace: only qdt:FormattedDateTimeType wrappers take this.
+  defp qdt_date_el(_name, nil), do: nil
+
+  defp qdt_date_el(name, %Date{} = d) do
+    {name, [], [{"qdt:DateTimeString", [{"format", "102"}], [Calendar.strftime(d, "%Y%m%d")]}]}
+  end
+
   # Wrap a single (possibly nil) child, dropping the wrapper if the child is nil.
   defp wrap(_name, nil), do: nil
   defp wrap(name, child), do: {name, [], [child]}
@@ -469,6 +489,10 @@ defmodule Facturx.CII do
           ])
         ),
       billing_period: parse_period(find(settlement, "ram:BillingSpecifiedPeriod")),
+      preceding_invoices:
+        settlement
+        |> find_all("ram:InvoiceReferencedDocument")
+        |> Enum.map(&parse_preceding_invoice/1),
       seller: parse_party(find(agreement, "ram:SellerTradeParty")),
       buyer: parse_party(find(agreement, "ram:BuyerTradeParty")),
       ship_to: parse_party(find(delivery, "ram:ShipToTradeParty")),
@@ -558,6 +582,13 @@ defmodule Facturx.CII do
       due_date_type_code: child_text(tt, "ram:DueDateTypeCode"),
       exemption_reason: child_text(tt, "ram:ExemptionReason"),
       exemption_reason_code: child_text(tt, "ram:ExemptionReasonCode")
+    })
+  end
+
+  defp parse_preceding_invoice(ref) do
+    prune(%{
+      number: child_text(ref, "ram:IssuerAssignedID"),
+      issue_date: parse_date(path_text(ref, ["ram:FormattedIssueDateTime", "qdt:DateTimeString"]))
     })
   end
 

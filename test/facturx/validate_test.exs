@@ -304,6 +304,21 @@ defmodule Facturx.ValidateTest do
       assert {:ok, :valid} = Facturx.validate(xml, opts)
     end
 
+    # The down-payment workflow end to end: a final invoice (framework S4) pointing
+    # back at the down payment it nets off.
+    test "a final invoice after a down payment satisfies the rules", %{opts: opts} do
+      {:ok, xml} =
+        Facturx.build(
+          invoice(%{
+            business_process: "S4",
+            tax_due_date_type_code: "5",
+            preceding_invoices: [%{number: "F-2026-042", issue_date: ~D[2026-06-15]}]
+          })
+        )
+
+      assert {:ok, :valid} = Facturx.validate(xml, opts)
+    end
+
     # BR-E-01 wants a line in category E behind an exempt VAT breakdown. The XSD
     # cannot see that, so only this test protects the BT-120/BT-121 path from
     # producing a plausible-looking but rejectable invoice.
