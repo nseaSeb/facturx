@@ -42,17 +42,17 @@ Python library does):
 
 ## Installation
 
-Not published to Hex yet — use the Git dependency:
-
 ```elixir
 def deps do
   [
-    {:facturx, github: "nseaSeb/facturx", tag: "v0.1.0"},
+    {:facturx, "~> 0.3"},
     # only if you use Facturx.validate/2:
     {:req, "~> 0.5"}
   ]
 end
 ```
+
+Docs: [hexdocs.pm/facturx](https://hexdocs.pm/facturx).
 
 ## Usage
 
