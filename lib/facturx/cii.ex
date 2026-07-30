@@ -294,7 +294,9 @@ defmodule Facturx.CII do
       "ram:ApplicableHeaderTradeSettlement",
       # InvoiceReferencedDocument comes *after* the summation in
       # HeaderTradeSettlementType, counter-intuitive as that reads.
+      # PaymentMeans precedes ApplicableTradeTax in HeaderTradeSettlementType.
       [t("ram:InvoiceCurrencyCode", inv.currency)] ++
+        Enum.map(inv.payment_means, &payment_means/1) ++
         Enum.map(inv.tax_breakdown, &trade_tax(&1, inv.tax_due_date_type_code)) ++
         [
           # BillingSpecifiedPeriod sits between ApplicableTradeTax and
@@ -321,13 +323,35 @@ defmodule Facturx.CII do
   defp billing_period(nil), do: nil
 
   defp billing_period(period) do
-    case compact([
-           date_el("ram:StartDateTime", period[:start_date]),
-           date_el("ram:EndDateTime", period[:end_date])
-         ]) do
-      [] -> nil
-      children -> {"ram:BillingSpecifiedPeriod", [], children}
-    end
+    maybe("ram:BillingSpecifiedPeriod", [
+      date_el("ram:StartDateTime", period[:start_date]),
+      date_el("ram:EndDateTime", period[:end_date])
+    ])
+  end
+
+  # BG-16 (BT-81 / BT-82) with its account and institution sub-blocks. Order follows
+  # TradeSettlementPaymentMeansType: code, information, card, debited account,
+  # credited account, institution.
+  defp payment_means(pm) do
+    e("ram:SpecifiedTradeSettlementPaymentMeans", [
+      t("ram:TypeCode", pm[:type_code]),
+      t("ram:Information", pm[:information]),
+      # BG-18 — ID is required by the schema, so the card block needs it.
+      maybe("ram:ApplicableTradeSettlementFinancialCard", [
+        t("ram:ID", pm[:card_id]),
+        t("ram:CardholderName", pm[:cardholder_name])
+      ]),
+      # BG-19 (BT-91) — DebtorFinancialAccountType requires IBANID.
+      wrap("ram:PayerPartyDebtorFinancialAccount", t("ram:IBANID", pm[:payer_iban])),
+      # BG-17 (BT-84 / BT-85) — every child optional, hence maybe/2.
+      maybe("ram:PayeePartyCreditorFinancialAccount", [
+        t("ram:IBANID", pm[:iban]),
+        t("ram:AccountName", pm[:account_name]),
+        t("ram:ProprietaryID", pm[:account_id])
+      ]),
+      # BT-86 — CreditorFinancialInstitutionType requires BICID.
+      wrap("ram:PayeeSpecifiedCreditorFinancialInstitution", t("ram:BICID", pm[:bic]))
+    ])
   end
 
   # BT-8: the entry's own code wins, else the document-level one (rule S1.13 makes
@@ -416,6 +440,15 @@ defmodule Facturx.CII do
   # --- build helpers --------------------------------------------------------
 
   defp e(name, children), do: {name, [], compact(children)}
+
+  # Like e/2 but drops the wrapper too when nothing survives, for containers whose
+  # children are all optional — an empty one would trip PEPPOL-EN16931-R008.
+  defp maybe(name, children) do
+    case compact(children) do
+      [] -> nil
+      kids -> {name, [], kids}
+    end
+  end
 
   defp t(_name, value) when value in [nil, ""], do: nil
   defp t(name, value), do: {name, [], [to_string(value)]}
@@ -522,6 +555,10 @@ defmodule Facturx.CII do
         settlement
         |> find_all("ram:InvoiceReferencedDocument")
         |> Enum.map(&parse_preceding_invoice/1),
+      payment_means:
+        settlement
+        |> find_all("ram:SpecifiedTradeSettlementPaymentMeans")
+        |> Enum.map(&parse_payment_means/1),
       seller: parse_party(find(agreement, "ram:SellerTradeParty")),
       buyer: parse_party(find(agreement, "ram:BuyerTradeParty")),
       ship_to: parse_party(find(delivery, "ram:ShipToTradeParty")),
@@ -611,6 +648,23 @@ defmodule Facturx.CII do
       due_date_type_code: child_text(tt, "ram:DueDateTypeCode"),
       exemption_reason: child_text(tt, "ram:ExemptionReason"),
       exemption_reason_code: child_text(tt, "ram:ExemptionReasonCode")
+    })
+  end
+
+  defp parse_payment_means(pm) do
+    card = find(pm, "ram:ApplicableTradeSettlementFinancialCard")
+    creditor = find(pm, "ram:PayeePartyCreditorFinancialAccount")
+
+    prune(%{
+      type_code: child_text(pm, "ram:TypeCode"),
+      information: child_text(pm, "ram:Information"),
+      card_id: child_text(card, "ram:ID"),
+      cardholder_name: child_text(card, "ram:CardholderName"),
+      payer_iban: path_text(pm, ["ram:PayerPartyDebtorFinancialAccount", "ram:IBANID"]),
+      iban: child_text(creditor, "ram:IBANID"),
+      account_name: child_text(creditor, "ram:AccountName"),
+      account_id: child_text(creditor, "ram:ProprietaryID"),
+      bic: path_text(pm, ["ram:PayeeSpecifiedCreditorFinancialInstitution", "ram:BICID"])
     })
   end
 

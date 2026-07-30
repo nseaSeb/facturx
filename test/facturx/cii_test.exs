@@ -561,6 +561,110 @@ defmodule Facturx.CIITest do
     end
   end
 
+  # BG-16 — how the invoice is to be paid. Sub-blocks have differing requirements:
+  # the debtor account and the institution each have a required child, the creditor
+  # account has none, so an empty one must not be emitted at all.
+  describe "payment means (BG-16)" do
+    defp with_means(means), do: %{sample_invoice() | payment_means: means}
+
+    test "a SEPA credit transfer emits account then institution, and round-trips" do
+      inv =
+        with_means([
+          %{
+            type_code: "58",
+            iban: "FR7630006000011234567890189",
+            account_name: "ACME SARL",
+            bic: "BNPAFRPPXXX"
+          }
+        ])
+
+      {:ok, xml} = Facturx.build(inv)
+
+      assert xml =~
+               "<ram:PayeePartyCreditorFinancialAccount>" <>
+                 "<ram:IBANID>FR7630006000011234567890189</ram:IBANID>" <>
+                 "<ram:AccountName>ACME SARL</ram:AccountName>" <>
+                 "</ram:PayeePartyCreditorFinancialAccount>"
+
+      assert xml =~
+               "<ram:PayeeSpecifiedCreditorFinancialInstitution>" <>
+                 "<ram:BICID>BNPAFRPPXXX</ram:BICID>"
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "payment means precede the VAT breakdown" do
+      {:ok, xml} = Facturx.build(with_means([%{type_code: "58", iban: "FR76"}]))
+
+      # Scope to the header block: lines carry their own ram:ApplicableTradeTax and
+      # are emitted first, so searching the whole document compares the wrong two.
+      [settlement] =
+        Regex.run(
+          ~r|<ram:ApplicableHeaderTradeSettlement>.*?</ram:ApplicableHeaderTradeSettlement>|s,
+          xml
+        )
+
+      currency = :binary.match(settlement, "ram:InvoiceCurrencyCode")
+      means = :binary.match(settlement, "SpecifiedTradeSettlementPaymentMeans")
+      tax = :binary.match(settlement, "ram:ApplicableTradeTax")
+      assert elem(currency, 0) < elem(means, 0)
+      assert elem(means, 0) < elem(tax, 0)
+    end
+
+    test "a direct debit carries the payer account (BT-91)" do
+      inv = with_means([%{type_code: "59", payer_iban: "FR7630006000011234567890189"}])
+      {:ok, xml} = Facturx.build(inv)
+
+      assert xml =~
+               "<ram:PayerPartyDebtorFinancialAccount>" <>
+                 "<ram:IBANID>FR7630006000011234567890189</ram:IBANID>"
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "a non-IBAN account uses ProprietaryID" do
+      inv = with_means([%{type_code: "30", account_id: "00012345678"}])
+      {:ok, xml} = Facturx.build(inv)
+
+      assert xml =~ "<ram:ProprietaryID>00012345678</ram:ProprietaryID>"
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "several means are emitted, order preserved" do
+      inv =
+        with_means([
+          %{type_code: "58", iban: "FR76"},
+          %{type_code: "20", information: "Chèque"}
+        ])
+
+      {:ok, xml} = Facturx.build(inv)
+
+      assert length(String.split(xml, "<ram:SpecifiedTradeSettlementPaymentMeans>")) - 1 == 2
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    # Every child of CreditorFinancialAccountType is optional, so without maybe/2
+    # this would emit an empty container and trip PEPPOL-EN16931-R008.
+    test "a bare type code emits no account container" do
+      inv = with_means([%{type_code: "10"}])
+      {:ok, xml} = Facturx.build(inv)
+
+      assert xml =~ "<ram:TypeCode>10</ram:TypeCode>"
+      refute xml =~ "PayeePartyCreditorFinancialAccount"
+      refute xml =~ "ApplicableTradeSettlementFinancialCard"
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "no payment means emits nothing" do
+      {:ok, xml} = Facturx.build(sample_invoice())
+      refute xml =~ "SpecifiedTradeSettlementPaymentMeans"
+    end
+  end
+
   # Rule G1.60 — a cross-field constraint between BT-23 and BT-3, so neither the
   # XSD nor the EN 16931 schematron catches it: without this check the first sign
   # would be a platform refusing the invoice.

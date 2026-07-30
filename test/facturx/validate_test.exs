@@ -304,6 +304,44 @@ defmodule Facturx.ValidateTest do
       assert {:ok, :valid} = Facturx.validate(xml, opts)
     end
 
+    test "payment means break no rule", %{opts: opts} do
+      {:ok, xml} =
+        Facturx.build(
+          invoice(%{
+            payment_means: [
+              %{
+                type_code: "58",
+                iban: "FR7630006000011234567890189",
+                account_name: "ACME SARL",
+                bic: "BNPAFRPPXXX"
+              }
+            ]
+          })
+        )
+
+      assert {:ok, :valid} = Facturx.validate(xml, opts)
+    end
+
+    # BR-51 caps BT-87 at 10 characters, per the PCI rule of showing at most the
+    # first 6 and last 4 digits. The XSD accepts any length, so a masked
+    # 16-character PAN looks fine right up to the platform rejecting it.
+    test "an over-long card number is rejected by BR-51", %{opts: opts} do
+      masked = fn id ->
+        {:ok, xml} =
+          Facturx.build(invoice(%{payment_means: [%{type_code: "48", card_id: id}]}))
+
+        assert {:ok, :valid} = Facturx.validate_xsd(xml), "the XSD accepts any length"
+        Facturx.validate(xml, opts)
+      end
+
+      # a full masked PAN is 16 characters — too long
+      assert {:error, {:invalid, errors}} = masked.("************1234")
+      assert Enum.any?(errors, &(&1.message =~ "BR-51"))
+
+      # 6 leading + 4 trailing digits is the maximum PCI allows
+      assert {:ok, :valid} = masked.("4012881881")
+    end
+
     # The down-payment workflow end to end: a final invoice (framework S4) pointing
     # back at the down payment it nets off.
     test "a final invoice after a down payment satisfies the rules", %{opts: opts} do

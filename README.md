@@ -128,6 +128,36 @@ invoice = %Facturx.Invoice{
 }
 ```
 
+### Payment means
+
+How the invoice is to be paid (BG-16). Not part of the regulatory data set — the
+tax administration does not need it — but an invoice without it is unusable:
+
+```elixir
+%Facturx.Invoice{
+  payment_means: [
+    %{
+      type_code: "58",                          # BT-81, UNTDID 4461: SEPA credit transfer
+      iban: "FR7630006000011234567890189",      # BT-84
+      account_name: "ACME SARL",                # BT-85
+      bic: "BNPAFRPPXXX"                        # BT-86
+    }
+  ]
+}
+```
+
+`type_code` is commonly `"30"` (credit transfer), `"58"` (SEPA credit transfer),
+`"59"` (SEPA direct debit), `"48"` (card), `"20"` (cheque), `"10"` (cash). The
+84-value list is not validated here — the schematron already does it.
+
+Other shapes: `:payer_iban` for a direct debit (BT-91), `:account_id` for a
+non-IBAN account, `:card_id` / `:cardholder_name` for a card (BT-87 / BT-88).
+
+> ⚠️ `:card_id` must be **at most 10 characters** — rule `BR-51` enforces the PCI
+> standard of showing at most the first 6 and last 4 digits. A masked
+> 16-character number like `"************1234"` is *too long* and the invoice gets
+> rejected. The XSD accepts any length; only the schematron catches this.
+
 ### Down payments: referencing a preceding invoice
 
 A final invoice nets off the down payments already invoiced, and points back at

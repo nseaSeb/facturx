@@ -62,6 +62,41 @@ defmodule Facturx.Invoice do
         }
 
   @typedoc """
+  A payment means (BG-16).
+
+  `:type_code` is BT-81, from UNTDID 4461 — commonly `"30"` (credit transfer),
+  `"58"` (SEPA credit transfer), `"59"` (SEPA direct debit), `"48"` (card), `"20"`
+  (cheque), `"10"` (cash). That list is **not** validated here: it holds 84 values
+  and the bundled schematron already checks it, so a copy in Elixir would only be
+  something to drift. Contrast BT-8, where three values and a real trap justified
+  inlining.
+
+  The account being credited is `:iban` (BT-84), `:account_name` (BT-85) or
+  `:account_id` (BT-84 in its non-IBAN form), its institution `:bic` (BT-86).
+  `:payer_iban` (BT-91) is the account debited for a direct debit, and
+  `:card_id` / `:cardholder_name` (BT-87 / BT-88) cover a card payment.
+
+  > #### Card numbers {: .warning}
+  >
+  > `:card_id` must be **at most 10 characters** — rule `BR-51`, which enforces the
+  > PCI standard of showing at most the first 6 and last 4 digits. A masked
+  > 16-character string such as `"************1234"` is *too long* and gets the
+  > invoice rejected; pass `"401288" <> "1881"` or just the last digits. The XSD
+  > accepts any length, so only the schematron catches this.
+  """
+  @type payment_means :: %{
+          optional(:type_code) => String.t(),
+          optional(:information) => String.t(),
+          optional(:iban) => String.t(),
+          optional(:account_name) => String.t(),
+          optional(:account_id) => String.t(),
+          optional(:bic) => String.t(),
+          optional(:payer_iban) => String.t(),
+          optional(:card_id) => String.t(),
+          optional(:cardholder_name) => String.t()
+        }
+
+  @typedoc """
   A reference to a preceding invoice (BG-3).
 
   What a final invoice points at to net off the down payments already invoiced.
@@ -147,6 +182,7 @@ defmodule Facturx.Invoice do
           delivery_date: Date.t() | nil,
           billing_period: period() | nil,
           preceding_invoices: [preceding_invoice()],
+          payment_means: [payment_means()],
           lines: [line()],
           tax_breakdown: [tax()],
           tax_due_date_type_code: String.t() | nil,
@@ -175,6 +211,8 @@ defmodule Facturx.Invoice do
             # BG-3 — preceding invoice references, i.e. the down payment invoices a
             # final invoice nets off. Goes with the B4/S4/M4 frameworks.
             preceding_invoices: [],
+            # BG-16 — how the invoice is to be paid (IBAN, BIC, direct debit, card)
+            payment_means: [],
             lines: [],
             tax_breakdown: [],
             # BT-8 (UNTDID 2475, one of `Facturx.vat_point_date_codes/0`) — VAT

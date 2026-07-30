@@ -30,6 +30,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   other date in the document is `udt:`. The reference block is also emitted *after*
   the monetary summation, per `HeaderTradeSettlementType`.
 
+- **Payment means** (BG-16) — `Facturx.Invoice.payment_means`, a list covering the
+  credited account (`:iban` / `:account_name` / `:account_id`, BT-84 / BT-85), its
+  institution (`:bic`, BT-86), a direct debit's debited account (`:payer_iban`,
+  BT-91) and card details (`:card_id` / `:cardholder_name`, BT-87 / BT-88), plus
+  BT-81 / BT-82. **Not** part of the regulatory Flux 1 set — the tax administration
+  does not need them — so the 66/116 count is unchanged; but an invoice without
+  payment details is unusable in practice.
+
+  ⚠️ `:card_id` must be **at most 10 characters** (rule `BR-51`, the PCI standard of
+  showing at most the first 6 and last 4 digits). A masked 16-character PAN like
+  `"************1234"` is *too long* and gets the invoice rejected. The XSD accepts
+  any length, so only the schematron catches it — pinned by a test.
 - **Rule G1.60 is now enforced**, alongside the G1.02 closed list and under the
   same `:validate_business_process` opt-in. A `B4`/`S4`/`M4` framework means "final
   invoice after a down payment", so it cannot be paired with a down-payment
