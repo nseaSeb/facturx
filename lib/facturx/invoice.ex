@@ -47,6 +47,9 @@ defmodule Facturx.Invoice do
   `net_price = gross_price - price_discount`, which is not checked here.
   `:gross_price` must be set for `:price_discount` to be emitted, the CII price
   container requiring an amount.
+
+  `:billing_period` is BG-26, the period this line covers — same shape as the
+  document-level `t:period/0`, and one of the three things `BR-FX-EN-04` accepts.
   """
   @type line :: %{
           optional(:id) => String.t(),
@@ -60,7 +63,8 @@ defmodule Facturx.Invoice do
           optional(:vat_rate) => Decimal.t(),
           optional(:line_total) => Decimal.t(),
           optional(:allowances) => [allowance_charge()],
-          optional(:charges) => [allowance_charge()]
+          optional(:charges) => [allowance_charge()],
+          optional(:billing_period) => period()
         }
 
   @typedoc """

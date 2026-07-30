@@ -561,6 +561,67 @@ defmodule Facturx.CIITest do
     end
   end
 
+  # BG-26 — the period a line covers. Same SpecifiedPeriodType as BG-14, so the
+  # emitter is reused; what needed checking is where it lands in the line.
+  describe "line billing period (BG-26)" do
+    defp line_with_period do
+      d = &Decimal.new/1
+
+      put_in(sample_invoice().lines, [
+        %{
+          id: "1",
+          name: "Abonnement",
+          net_price: d.("100.00"),
+          quantity: d.("2"),
+          unit: "C62",
+          vat_category: "S",
+          vat_rate: d.("20.00"),
+          line_total: d.("200.00"),
+          billing_period: %{start_date: ~D[2026-07-01], end_date: ~D[2026-07-31]},
+          allowances: [%{amount: d.("5.00"), reason: "Remise"}]
+        }
+      ])
+    end
+
+    test "validates and round-trips" do
+      inv = line_with_period()
+      {:ok, xml} = Facturx.build(inv)
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "sits between the line tax and the line allowances" do
+      {:ok, xml} = Facturx.build(line_with_period())
+
+      [line] =
+        Regex.run(
+          ~r|<ram:SpecifiedLineTradeSettlement>.*?</ram:SpecifiedLineTradeSettlement>|s,
+          xml
+        )
+
+      tax = :binary.match(line, "ram:ApplicableTradeTax")
+      period = :binary.match(line, "ram:BillingSpecifiedPeriod")
+      allowance = :binary.match(line, "ram:SpecifiedTradeAllowanceCharge")
+      assert elem(tax, 0) < elem(period, 0)
+      assert elem(period, 0) < elem(allowance, 0)
+    end
+
+    test "a line period is independent of the document one" do
+      inv = %{line_with_period() | billing_period: %{start_date: ~D[2026-01-01]}}
+      {:ok, xml} = Facturx.build(inv)
+
+      assert length(String.split(xml, "<ram:BillingSpecifiedPeriod>")) - 1 == 2
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "no line period emits nothing in the line" do
+      {:ok, xml} = Facturx.build(sample_invoice())
+      refute xml =~ "BillingSpecifiedPeriod"
+    end
+  end
+
   # BG-20/BG-21 at document level, BG-27/BG-28 on a line — one CII element for all
   # four, told apart by ChargeIndicator.
   describe "allowances and charges (BG-20/21, BG-27/28)" do

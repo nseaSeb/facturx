@@ -238,7 +238,9 @@ defmodule Facturx.CII do
       ]),
       e("ram:SpecifiedLineTradeSettlement", [
         line_trade_tax(line),
-        # BG-27 / BG-28 — after the tax, before the line summation.
+        # BG-26 — LineTradeSettlementType puts the period after the tax.
+        billing_period(line[:billing_period]),
+        # BG-27 / BG-28 — after the period, before the line summation.
         allowances_and_charges(line),
         e("ram:SpecifiedTradeSettlementLineMonetarySummation", [
           amount("ram:LineTotalAmount", line[:line_total])
@@ -679,7 +681,9 @@ defmodule Facturx.CII do
           ])
         ),
       allowances: line_allowances(li, 0),
-      charges: line_allowances(li, 1)
+      charges: line_allowances(li, 1),
+      billing_period:
+        parse_period(path(li, ["ram:SpecifiedLineTradeSettlement", "ram:BillingSpecifiedPeriod"]))
     })
   end
 

@@ -161,7 +161,7 @@ défaut mais reste désactivable.
 
 ### Reste à faire (hors périmètre de ce jalon)
 
-Sur les 116 données réglementaires du Flux 1, **62 sont émises** (50 au moment de
+Sur les 116 données réglementaires du Flux 1, **85 sont émises** (50 au moment de
 la décision initiale). L'[Annexe B](../reference/mapping-cii-flux1.md) détaille
 chaque cas.
 
@@ -173,14 +173,15 @@ structurellement incomplète au regard du socle.
 
 Reste, par priorité :
 
-1. **Blocs optionnels dont on voudra l'usage** — chacun impose son contenu
-   obligatoire : référence à une facture antérieure (`BG-3`, utile aux factures
-   définitives après acompte, donc aux cadres `B4`/`S4`/`M4`), remises et charges
-   document (`BG-20`/`BG-21`) puis ligne (`BG-27`/`BG-28`), période de ligne
-   (`BG-26`), représentant fiscal (`BG-11`), assujetti unique (`BT-29d`), adresse
-   de livraison complète (`BT-76`/`BT-79`/`BT-165`).
-2. **Hors socle réglementaire mais fréquemment attendu** : moyens de paiement /
-   IBAN (`TradeSettlementPaymentMeansType` est dans le XSD embarqué, jamais émis).
+1. **Blocs optionnels restants** — représentant fiscal (`BG-11`), assujetti unique
+   (`BT-29d`), adresse de livraison complète (`BT-76`/`BT-79`/`BT-165`), note de
+   ligne (`BT-127`).
+2. **`BT-111`** (TVA en devise de comptabilisation) — piège : même chemin CII que
+   `BT-110`, c'est la *seconde* occurrence de `TaxTotalAmount` (`maxOccurs="2"`).
+   Demanderait un champ distinct et `TaxCurrencyCode`.
+
+Hors socle réglementaire, `BG-16` (moyens de paiement) est fait : l'administration
+n'en a pas besoin, le client si.
 
 Puis, si le besoin apparaît : les `EXT-FR-FE-*` de niveau ligne (tous en
 trajectoire CIBLE) et les XSD Base/Full du PPF comme cibles de validation

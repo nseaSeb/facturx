@@ -20,7 +20,7 @@ Table de correspondance complète entre les **données réglementaires du Flux 1
 
 ## Ce que les « — » impliquent réellement
 
-Les 36 données non émises se répartissent en catégories très inégales en gravité.
+Les 31 données non émises se répartissent en catégories très inégales en gravité.
 C'est cette lecture, plus que le décompte brut, qui dit où on en est.
 
 ### 1. Plus aucun trou inconditionnel
@@ -44,7 +44,6 @@ voudra l'émettre, il faudra émettre **tout** son contenu obligatoire :
 | `BT-29d` assujetti unique (`0..1`) | `BT-29d-1` (schéma, `0231`) |
 | `BG-11` REPRÉSENTANT FISCAL (`0..1`) | `BT-63`, `BT-63-0` |
 | `BT-111` TVA en devise de comptabilisation (`0..1`) | `BT-111-1` (devise) |
-| `BG-26` PÉRIODE de ligne (`0..1`) | `BT-134-1`, `BT-135-1` |
 | `EXT-FR-FE-150` adresse de livraison de ligne (`0..1`) | `EXT-FR-FE-157` (code pays) |
 
 ### 3. Purement optionnelles
@@ -163,11 +162,11 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `EXT-FR-FE-158-0` | 0..1 | C | Date de livraison à la ligne | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime` |
 | `EXT-FR-FE-158` | 0..1 | C | Date de livraison à la ligne valeur | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime/udt:DateTimeString` |
 | `EXT-FR-FE-158-1` | 0..1 | C | Format date | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime/udt:DateTimeString/@format` |
-| `BG-26` | 0..1 | C | PERIODE DE FACTURATION D'UNE LIGNE | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod` |
-| `BT-134` | 0..1 | C | Date de début de période de facturation d'une ligne | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:StartDateTime/udt:DateTimeString` |
-| `BT-134-1` | 1..1 | C | Format date | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:StartDateTime/udt:DateTimeString@format` |
-| `BT-135` | 0..1 | C | Date de fin de période de facturation d'une ligne | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:EndDateTime/udt:DateTimeString` |
-| `BT-135-1` | 1..1 | C | Format date | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:EndDateTime/udt:DateTimeString@format` |
+| `BG-26` | 0..1 | C | PERIODE DE FACTURATION D'UNE LIGNE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod` |
+| `BT-134` | 0..1 | C | Date de début de période de facturation d'une ligne | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:StartDateTime/udt:DateTimeString` |
+| `BT-134-1` | 1..1 | C | Format date | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:StartDateTime/udt:DateTimeString@format` |
+| `BT-135` | 0..1 | C | Date de fin de période de facturation d'une ligne | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:EndDateTime/udt:DateTimeString` |
+| `BT-135-1` | 1..1 | C | Format date | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:EndDateTime/udt:DateTimeString@format` |
 | `BG-27` | 0..n | C | REMISE DE LIGNE DE FACTURE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeAllowanceCharge with ChargeIndicator = 'false'` |
 | `BT-136` | 1..1 | C | Montant d'une remise, hors TVA | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:ActualAmount` |
 | `BG-28` | 0..n | C | CHARGE OU FRAIS D'UNE LIGNE DE FACTURE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:SpecifiedTradeAllowanceCharge with ChargeIndicator = 'true'` |
@@ -179,4 +178,4 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BG-31` | 1..1 | C | INFORMATION SUR L'ARTICLE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedTradeProduct` |
 | `BT-153` | 1..1 | C | Nom de l'article | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedTradeProduct/ram:Name` |
 
-**Couverture** : 80 / 116 données réglementaires émises.
+**Couverture** : 85 / 116 données réglementaires émises.

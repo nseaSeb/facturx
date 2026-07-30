@@ -304,6 +304,36 @@ defmodule Facturx.ValidateTest do
       assert {:ok, :valid} = Facturx.validate(xml, opts)
     end
 
+    # BR-FX-EN-04 accepts BT-72, BG-14 *or* BG-26. This checks the third route: no
+    # delivery date, no document period, only a line period.
+    test "a line period alone satisfies BR-FX-EN-04", %{opts: opts} do
+      d = &Decimal.new/1
+
+      {:ok, xml} =
+        Facturx.build(
+          invoice(%{
+            delivery_date: nil,
+            lines: [
+              %{
+                id: "1",
+                name: "Abonnement",
+                net_price: d.("100.00"),
+                quantity: d.("2"),
+                unit: "C62",
+                vat_category: "S",
+                vat_rate: d.("20.00"),
+                line_total: d.("200.00"),
+                billing_period: %{start_date: ~D[2026-07-01], end_date: ~D[2026-07-31]}
+              }
+            ]
+          })
+        )
+
+      # R008 still warns: with no delivery data CII forces an empty container.
+      assert {:ok, {:valid_with_warnings, findings}} = Facturx.validate(xml, opts)
+      refute Enum.any?(findings, &(&1.message =~ "BR-FX-EN-04"))
+    end
+
     # BR-CO-11/12/13/16 tie the allowance and charge totals to the entries and to
     # the tax basis. Only the schematron does this arithmetic, so it is the sole
     # guard against emitting an invoice whose totals do not add up.

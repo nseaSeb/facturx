@@ -52,12 +52,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   `ChargeTotalAmount` **before** `AllowanceTotalAmount`, and
   `TradeAllowanceChargeType` puts `ReasonCode` before `Reason`.
 
+- **Line invoicing period** (BG-26) — `:billing_period` on a line, same shape as
+  the document-level one (BT-134 / BT-135). Reuses the BG-14 emitter, the CII type
+  being identical; what needed care was its position, after the line's VAT and
+  before its allowances. Note it satisfies `BR-FX-EN-04` on its own — that rule
+  accepts BT-72, BG-14 *or* BG-26 — which a test now checks.
 - **Payment means** (BG-16) — `Facturx.Invoice.payment_means`, a list covering the
   credited account (`:iban` / `:account_name` / `:account_id`, BT-84 / BT-85), its
   institution (`:bic`, BT-86), a direct debit's debited account (`:payer_iban`,
   BT-91) and card details (`:card_id` / `:cardholder_name`, BT-87 / BT-88), plus
   BT-81 / BT-82. **Not** part of the regulatory Flux 1 set — the tax administration
-  does not need them — so they do not enter the 80/116 count; but an invoice without
+  does not need them — so they do not enter the 85/116 count; but an invoice without
   payment details is unusable in practice.
 
   ⚠️ `:card_id` must be **at most 10 characters** (rule `BR-51`, the PCI standard of
@@ -74,7 +79,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   invoice. The legitimate combinations still pass: a down-payment invoice under a
   standard framework (`S1` + `386`), and a final invoice with an ordinary type.
 
-Coverage of the regulatory Flux 1 data set goes from 50/116 to **80/116** — see
+Coverage of the regulatory Flux 1 data set goes from 50/116 to **85/116** — see
 `docs/reference/mapping-cii-flux1.md`.
 
 ### Added (tooling)
