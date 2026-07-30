@@ -15,49 +15,31 @@ Table de correspondance complète entre les **données réglementaires du Flux 1
 > Les chemins sont reproduits depuis l'annexe. Seule correction apportée : une
 > parenthèse fermante orpheline après certains `@format` (coquille de la source).
 
-> ⚠️ La colonne **Émis** est maintenue **à la main**. Elle est à revérifier contre
-> `Facturx.CII.build/2` à chaque ajout d'élément, sans quoi le décompte dérive.
-
 ## Ce que les « — » impliquent réellement
 
-Les 31 données non émises se répartissent en catégories très inégales en gravité.
-C'est cette lecture, plus que le décompte brut, qui dit où on en est.
+**Le socle est couvert dans les limites du profil EN 16931.** Les 20 données encore
+non émises se répartissent en deux groupes, et aucune n'est atteignable avec le
+schéma actuellement embarqué :
 
-### 1. Plus aucun trou inconditionnel
+### 1. Les extensions françaises `EXT-FR-FE-*` (19 données)
 
-Il n'existe plus de cas où une donnée obligatoire manque dans un groupe lui-même
-obligatoire. `BT-148` (prix brut de l'article) était le seul — `1..1` dans `BG-29`,
-lui-même `1..1` au sein de `BG-25` — et il est émis depuis l'ajout de
-`:gross_price` sur les lignes.
+Toutes en trajectoire **CIBLE**, et toutes au **niveau ligne** : sous-lignes,
+référence à une facture antérieure en ligne, adresse et date de livraison à la
+ligne, code sujet d'une note de ligne.
 
-Autrement dit : une facture produite par la lib ne peut plus être structurellement
-incomplète au regard du socle. Tout ce qui suit est conditionnel ou optionnel.
+Elles ne font pas partie du profil **EN 16931**, dont le XSD embarqué rejette tout
+élément hors profil. Les émettre demanderait donc les XSD `F1_FULL` du PPF, un
+autre chantier — voir l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 
-### 2. Obligatoires, mais **conditionnels** (aucun trou tant que le bloc n'est pas utilisé)
+### 2. `BT-127-00` — conteneur de note de ligne en `0..n`
 
-Ces données sont `1..1` *à l'intérieur* d'un groupe optionnel (`0..1` / `0..n`).
-Ne pas émettre le groupe est parfaitement conforme ; en revanche, dès qu'on
-voudra l'émettre, il faudra émettre **tout** son contenu obligatoire :
+Le contenu (`BT-127`) est émis, mais une seule note par ligne : `IncludedNote` est
+limité à une occurrence dans le XSD EN 16931, là où l'annexe prévoit `0..n` (ce qui
+vaut pour le profil EXTENDED). Même limite de profil que ci-dessus.
 
-| Bloc (card.) | Données obligatoires à fournir avec |
-|---|---|
-| `BT-29d` assujetti unique (`0..1`) | `BT-29d-1` (schéma, `0231`) |
-| `BG-11` REPRÉSENTANT FISCAL (`0..1`) | `BT-63`, `BT-63-0` |
-| `BT-111` TVA en devise de comptabilisation (`0..1`) | `BT-111-1` (devise) |
-| `EXT-FR-FE-150` adresse de livraison de ligne (`0..1`) | `EXT-FR-FE-157` (code pays) |
-
-### 3. Purement optionnelles
-
-Le reste (`0..1` / `0..n`) : sous-lignes et notes de ligne, lignes 2 et 3 de
-l'adresse de livraison, subdivision de pays, référence de commande, et l'ensemble
-des `EXT-FR-FE-*` de niveau ligne. Leur absence ne compromet aucune conformité ;
-elles limitent seulement les cas d'usage couverts.
-
-
-Un « — » n'est pas nécessairement un manque de conformité : beaucoup de ces
-données sont conditionnelles (elles n'existent que dans un cas d'usage donné) ou
-en trajectoire CIBLE. Les blocs restants sont listés comme reste-à-faire dans
-l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
+> ⚠️ La colonne **Émis** est maintenue **à la main**. Elle est à revérifier contre
+> `Facturx.CII.build/2` à chaque ajout d'élément, sans quoi le décompte dérive —
+> c'est déjà arrivé avec `BT-111`, dont le chemin CII est partagé avec `BT-110`.
 
 | ID | Card. | Traj. | Donnée | Émis | Chemin CII (relatif à `/rsm:CrossIndustryInvoice`) |
 |---|---|---|---|---|---|
@@ -80,8 +62,8 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BT-26` | 0..1 | C | Date d'émission de facture antérieure | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:InvoiceReferencedDocument/ram:FormattedIssueDateTime/qdt:DateTimeString` |
 | `BT-26-1` | 0..1 | C | Format date | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:InvoiceReferencedDocument/ram:FormattedIssueDateTime/qdt:DateTimeString@format` |
 | `BG-4` | 1..1 | D | VENDEUR | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty` |
-| `BT-29d` | 0..1 | D | Identifiant du vendeur (Assujetti unique) | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty/ram:GlobalID` |
-| `BT-29d-1` | 1..1 | D | Identifiant du schéma (Assujetti unique) | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty/ram:GlobalID/@schemeID` |
+| `BT-29d` | 0..1 | D | Identifiant du vendeur (Assujetti unique) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty/ram:GlobalID` |
+| `BT-29d-1` | 1..1 | D | Identifiant du schéma (Assujetti unique) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty/ram:GlobalID/@schemeID` |
 | `BT-30` | 1..1 | D | Numéro de SIREN | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty/ram:SpecifiedLegalOrganization/ram:ID` |
 | `BT-30-1` | 1..1 | D | Identifiant du schéma | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty/ram:SpecifiedLegalOrganization/ram:ID/@schemeID` |
 | `BT-31` | 0..1 | D | Identifiant à la TVA du vendeur | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTradeParty/ram:SpecifiedTaxRegistration/ram:ID` |
@@ -95,9 +77,9 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BT-48-0` | 1..1 | D | Qualifiant d'Identifiant fiscal de l'acheteur | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:BuyerTradeParty/ram:SpecifiedTaxRegistration/ram:ID/@schemeID = "VA"` |
 | `BG-8` | 1..1 | D | ADRESSE POSTALE DE L'ACHETEUR | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:BuyerTradeParty/ram:PostalTradeAddress` |
 | `BT-55` | 1..1 | D | Code de pays de l'acheteur | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:BuyerTradeParty/ram:PostalTradeAddress/ram:CountryID` |
-| `BG-11` | 0..1 | D | REPRÉSENTANT FISCAL DU VENDEUR | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTaxRepresentativeTradeParty` |
-| `BT-63` | 1..1 | D | Identifiant à la TVA du représentant fiscal du vendeur | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTaxRepresentativeTradeParty/ram:SpecifiedTaxRegistration/ram:ID` |
-| `BT-63-0` | 1..1 | D | Identifiant du schéma de l'identifiant TVA du représentant fiscal | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTaxRepresentativeTradeParty/ram:SpecifiedTaxRegistration/ram:ID/@schemeID = "VA"` |
+| `BG-11` | 0..1 | D | REPRÉSENTANT FISCAL DU VENDEUR | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTaxRepresentativeTradeParty` |
+| `BT-63` | 1..1 | D | Identifiant à la TVA du représentant fiscal du vendeur | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTaxRepresentativeTradeParty/ram:SpecifiedTaxRegistration/ram:ID` |
+| `BT-63-0` | 1..1 | D | Identifiant du schéma de l'identifiant TVA du représentant fiscal | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeAgreement/ram:SellerTaxRepresentativeTradeParty/ram:SpecifiedTaxRegistration/ram:ID/@schemeID = "VA"` |
 | `BG-13` | 0..1 | D | INFORMATIONS DE LIVRAISON | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty` |
 | `BT-72` | 0..1 | D | Date effective de livraison | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime/udt:DateTimeString` |
 | `BT-72-1` | 0..1 | D | Format date | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime/udt:DateTimeString@format` |
@@ -108,11 +90,11 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BT-74-1` | 1..1 | D | Format date | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:BillingSpecifiedPeriod/ram:EndDateTime/udt:DateTimeString@format` |
 | `BG-15` | 0..1 | C | ADRESSE DE LIVRAISON | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress` |
 | `BT-75` | 0..1 | C | Adresse de livraison - Ligne 1 | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:LineOne` |
-| `BT-76` | 0..1 | C | Adresse de livraison - Ligne 2 | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:LineTwo` |
-| `BT-165` | 0..1 | C | Adresse de livraison - Ligne 3 | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:LineThree` |
+| `BT-76` | 0..1 | C | Adresse de livraison - Ligne 2 | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:LineTwo` |
+| `BT-165` | 0..1 | C | Adresse de livraison - Ligne 3 | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:LineThree` |
 | `BT-77` | 0..1 | C | Localité Adresse de livraison | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CityName` |
 | `BT-78` | 0..1 | C | Code postal Adresse de livraison | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:PostcodeCode` |
-| `BT-79` | 0..1 | C | Subdivision du pays | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CountrySubDivisionName` |
+| `BT-79` | 0..1 | C | Subdivision du pays | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CountrySubDivisionName` |
 | `BT-80` | 1..1 | C | Code de pays | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CountryID` |
 | `BG-20` | 0..n | C | REMISES AU NIVEAU DU DOCUMENT | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge ChargeIndicator=false` |
 | `BT-92` | 1..1 | C | Montant de la remise au niveau document | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeAllowanceCharge/ram:ActualAmount` |
@@ -128,8 +110,8 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BT-109` | 1..1 | D | Montant total de la facture hors TVA | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeSettlementHeaderMonetarySummation/ram:TaxBasisTotalAmount` |
 | `BT-110` | 1,11..1 | D | Montant total de TVA de la facture | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeSettlementHeaderMonetarySummation/ram:TaxTotalAmount` |
 | `BT-110-1` | 1..1 | D | Code devise | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeSettlementHeaderMonetarySummation/ram:TaxTotalAmount/@currencyID` |
-| `BT-111` | 0..1 | D | Montant total de TVA de la facture exprimée (devise de comptabilisation) | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeSettlementHeaderMonetarySummation/ram:TaxTotalAmount` |
-| `BT-111-1` | 1..1 | D | Code devise | — | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeSettlementHeaderMonetarySummation/ram:TaxTotalAmount/@currencyID` |
+| `BT-111` | 0..1 | D | Montant total de TVA de la facture exprimée (devise de comptabilisation) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeSettlementHeaderMonetarySummation/ram:TaxTotalAmount` |
+| `BT-111-1` | 1..1 | D | Code devise | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:SpecifiedTradeSettlementHeaderMonetarySummation/ram:TaxTotalAmount/@currencyID` |
 | `BG-23` | 1..n | D | VENTILATION DE LA TVA | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:ApplicableTradeTax` |
 | `BT-116` | 1..1 | D | Base d'imposition du type de TVA | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:ApplicableTradeTax/ram:BasisAmount` |
 | `BT-117` | 1..1 | D | Montant de la TVA pour chaque type de TVA | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:ApplicableTradeTax/ram:CalculatedAmount` |
@@ -141,7 +123,7 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BG-25` | 1..n | C | LIGNE DE FACTURE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem` |
 | `BT-127-00` | 0..n | C | Note de ligne de facture | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:AssociatedDocumentLineDocument/ram:IncludedNote` |
 | `EXT-FR-FE-183` | 0..1 | C | Code sujet de la note de ligne | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:AssociatedDocumentLineDocument/ram:IncludedNote/ram:SubjectCode` |
-| `BT-127` | 0..1 | C | Note de ligne de facture | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:AssociatedDocumentLineDocument/ram:IncludedNote/ram:Content` |
+| `BT-127` | 0..1 | C | Note de ligne de facture | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:AssociatedDocumentLineDocument/ram:IncludedNote/ram:Content` |
 | `BT-129` | 1..1 | C | Quantité facturée | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:BilledQuantity` |
 | `BT-130` | 1..1 | C | Code de l'unité de mesure de la quantité facturée | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:BilledQuantity/@unitCode` |
 | `EXT-FR-FE-BG-06` | 0..1 | C | REFERENCE A FACTURE ANTERIEURE EN LIGNE (permet de gérer les reprises en ligne, notamment sur factures d'acompte) | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:InvoiceReferencedDocument` |
@@ -178,4 +160,4 @@ l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
 | `BG-31` | 1..1 | C | INFORMATION SUR L'ARTICLE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedTradeProduct` |
 | `BT-153` | 1..1 | C | Nom de l'article | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedTradeProduct/ram:Name` |
 
-**Couverture** : 85 / 116 données réglementaires émises.
+**Couverture** : 96 / 116 données réglementaires émises.

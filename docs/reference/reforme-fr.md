@@ -217,7 +217,7 @@ Facturx.generate(pdf, invoice, validate_business_process: true)
   `Facturx.validate_xsd/2` accepte la sortie enrichie.
 
 Pour l'état de couverture de l'ensemble des données réglementaires, voir
-l'[Annexe B](mapping-cii-flux1.md) (85 / 116 aujourd'hui).
+l'[Annexe B](mapping-cii-flux1.md) (96 / 116 aujourd'hui).
 
 ## 5. Affirmations courantes qui ne résistent pas à la source
 

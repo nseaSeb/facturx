@@ -77,7 +77,8 @@ defmodule Facturx.CII do
 
     with :ok <- check_business_process(inv.business_process, check_bp?),
          :ok <- check_final_invoice_type(inv, check_bp?),
-         :ok <- check_vat_point_dates(inv, flag?(opts, :validate_vat_point_date, true)) do
+         :ok <- check_vat_point_dates(inv, flag?(opts, :validate_vat_point_date, true)),
+         :ok <- check_tax_currency(inv) do
       doc =
         {"rsm:CrossIndustryInvoice", @ns,
          [
@@ -181,6 +182,27 @@ defmodule Facturx.CII do
 
   defp check_vat_point_date(code, _check?), do: {:error, {:invalid_vat_point_date_code, code}}
 
+  # BT-110 and BT-111 are two occurrences of ram:TaxTotalAmount, told apart only by
+  # their currencyID. So BT-111 needs BT-6 (BR-53), and BT-6 must differ from the
+  # invoice currency — otherwise the two are indistinguishable and the schematron
+  # rejects the document. Without this check the first case crashed the encoder on a
+  # nil attribute, and the second built happily.
+  defp check_tax_currency(%Invoice{totals: totals, currency: currency, tax_currency: tax}) do
+    cond do
+      blank?(totals[:tax_total_in_tax_currency]) ->
+        :ok
+
+      blank?(tax) ->
+        {:error, {:tax_currency_missing, :tax_total_in_tax_currency}}
+
+      tax == currency ->
+        {:error, {:tax_currency_not_distinct, tax}}
+
+      true ->
+        :ok
+    end
+  end
+
   # BusinessProcess (BT-23) must precede Guideline (BT-24) per ExchangedDocumentContextType.
   defp context(inv, profile) do
     e("rsm:ExchangedDocumentContext", [
@@ -226,7 +248,13 @@ defmodule Facturx.CII do
 
   defp line_item(line) do
     e("ram:IncludedSupplyChainTradeLineItem", [
-      e("ram:AssociatedDocumentLineDocument", [t("ram:LineID", line[:id])]),
+      e("ram:AssociatedDocumentLineDocument", [
+        t("ram:LineID", line[:id]),
+        # BT-127 — content only: EN 16931 does not allow ram:SubjectCode on a line
+        # note (that is EXT-FR-FE-183, a French extension), and emitting one gets
+        # the invoice rejected. One note only, this element not being unbounded.
+        wrap("ram:IncludedNote", t("ram:Content", line[:note]))
+      ]),
       e("ram:SpecifiedTradeProduct", [t("ram:Name", line[:name])]),
       e("ram:SpecifiedLineTradeAgreement", [
         # GrossPrice precedes NetPrice in LineTradeAgreementType.
@@ -286,7 +314,9 @@ defmodule Facturx.CII do
   defp header_agreement(inv) do
     e("ram:ApplicableHeaderTradeAgreement", [
       party("ram:SellerTradeParty", inv.seller),
-      party("ram:BuyerTradeParty", inv.buyer)
+      party("ram:BuyerTradeParty", inv.buyer),
+      # BG-11 — follows the buyer in HeaderTradeAgreementType.
+      party("ram:SellerTaxRepresentativeTradeParty", inv.tax_representative)
     ])
   end
 
@@ -304,7 +334,11 @@ defmodule Facturx.CII do
       # HeaderTradeSettlementType, counter-intuitive as that reads.
       # PaymentMeans precedes ApplicableTradeTax in HeaderTradeSettlementType.
       # SpecifiedTradeAllowanceCharge sits between the period and the terms.
-      [t("ram:InvoiceCurrencyCode", inv.currency)] ++
+      [
+        # BT-6 precedes InvoiceCurrencyCode in HeaderTradeSettlementType.
+        t("ram:TaxCurrencyCode", inv.tax_currency),
+        t("ram:InvoiceCurrencyCode", inv.currency)
+      ] ++
         Enum.map(inv.payment_means, &payment_means/1) ++
         Enum.map(inv.tax_breakdown, &trade_tax(&1, inv.tax_due_date_type_code)) ++
         [
@@ -315,7 +349,7 @@ defmodule Facturx.CII do
         allowances_and_charges(Map.from_struct(inv)) ++
         [
           payment_terms(inv.due_date),
-          monetary_summation(inv.totals, inv.currency)
+          monetary_summation(inv.totals, inv.currency, inv.tax_currency)
         ] ++
         Enum.map(inv.preceding_invoices, &preceding_invoice/1)
     )
@@ -417,13 +451,15 @@ defmodule Facturx.CII do
 
   # Wire order does not follow the BT numbering: ChargeTotalAmount comes *before*
   # AllowanceTotalAmount, though BT-107 (allowances) precedes BT-108 (charges).
-  defp monetary_summation(totals, currency) do
+  defp monetary_summation(totals, currency, tax_currency) do
     e("ram:SpecifiedTradeSettlementHeaderMonetarySummation", [
       amount("ram:LineTotalAmount", totals[:line_total]),
       amount("ram:ChargeTotalAmount", totals[:charge_total]),
       amount("ram:AllowanceTotalAmount", totals[:allowance_total]),
       amount("ram:TaxBasisTotalAmount", totals[:tax_basis_total]),
       amount("ram:TaxTotalAmount", totals[:tax_total], currency),
+      # BT-111 is the second TaxTotalAmount (maxOccurs=2), in the accounting currency.
+      amount("ram:TaxTotalAmount", totals[:tax_total_in_tax_currency], tax_currency),
       amount("ram:RoundingAmount", totals[:rounding]),
       amount("ram:GrandTotalAmount", totals[:grand_total]),
       amount("ram:TotalPrepaidAmount", totals[:prepaid]),
@@ -435,6 +471,11 @@ defmodule Facturx.CII do
 
   defp party(tag, p) do
     e(tag, [
+      # GlobalID precedes Name in TradePartyType. The 0231 default (SIREN of an
+      # assujetti unique) is BT-29d, which the annexe puts on the seller alone —
+      # applying it everywhere would mislabel, say, a buyer's GLN as a French VAT
+      # group id.
+      id_el_named("ram:GlobalID", p[:global_id], p[:global_scheme] || default_global_scheme(tag)),
       t("ram:Name", p[:name]),
       legal_org(p),
       contact(p[:contact]),
@@ -466,8 +507,12 @@ defmodule Facturx.CII do
     e("ram:PostalTradeAddress", [
       t("ram:PostcodeCode", a[:postcode]),
       t("ram:LineOne", a[:line_one]),
+      t("ram:LineTwo", a[:line_two]),
+      t("ram:LineThree", a[:line_three]),
       t("ram:CityName", a[:city]),
-      t("ram:CountryID", a[:country])
+      t("ram:CountryID", a[:country]),
+      # CountrySubDivisionName follows CountryID, not the city.
+      t("ram:CountrySubDivisionName", a[:country_subdivision])
     ])
   end
 
@@ -495,6 +540,17 @@ defmodule Facturx.CII do
 
   defp t(_name, value) when value in [nil, ""], do: nil
   defp t(name, value), do: {name, [], [to_string(value)]}
+
+  defp default_global_scheme("ram:SellerTradeParty"), do: "0231"
+  defp default_global_scheme(_tag), do: nil
+
+  defp id_el_named(_name, nil, _scheme), do: nil
+  defp id_el_named(name, value, nil), do: {name, [], [to_string(value)]}
+
+  defp id_el_named(name, value, scheme),
+    do: {name, [], [to_string(value)]} |> put_scheme(scheme)
+
+  defp put_scheme({name, _attrs, kids}, scheme), do: {name, [{"schemeID", scheme}], kids}
 
   defp id_el(nil, _scheme), do: nil
   defp id_el(value, scheme), do: {"ram:ID", [{"schemeID", scheme}], [to_string(value)]}
@@ -549,6 +605,9 @@ defmodule Facturx.CII do
     delivery = find(tx, "ram:ApplicableHeaderTradeDelivery")
     settlement = find(tx, "ram:ApplicableHeaderTradeSettlement")
     summation = find(settlement, "ram:SpecifiedTradeSettlementHeaderMonetarySummation")
+    # Read once: the totals need them to tell BT-110 from BT-111.
+    invoice_currency = path_text(settlement, ["ram:InvoiceCurrencyCode"]) || "EUR"
+    tax_currency = path_text(settlement, ["ram:TaxCurrencyCode"])
 
     %Invoice{
       profile:
@@ -576,7 +635,8 @@ defmodule Facturx.CII do
         parse_date(
           path_text(root, ["rsm:ExchangedDocument", "ram:IssueDateTime", "udt:DateTimeString"])
         ),
-      currency: path_text(settlement, ["ram:InvoiceCurrencyCode"]) || "EUR",
+      currency: invoice_currency,
+      tax_currency: tax_currency,
       due_date:
         parse_date(
           path_text(settlement, [
@@ -606,9 +666,10 @@ defmodule Facturx.CII do
       charges: elem(parse_allowances_and_charges(settlement), 1),
       seller: parse_party(find(agreement, "ram:SellerTradeParty")),
       buyer: parse_party(find(agreement, "ram:BuyerTradeParty")),
+      tax_representative: parse_party(find(agreement, "ram:SellerTaxRepresentativeTradeParty")),
       ship_to: parse_party(find(delivery, "ram:ShipToTradeParty")),
       lines: tx |> find_all("ram:IncludedSupplyChainTradeLineItem") |> Enum.map(&parse_line/1),
-      totals: parse_totals(summation)
+      totals: parse_totals(summation, invoice_currency, tax_currency)
     }
     |> put_tax_breakdown(settlement)
   end
@@ -642,6 +703,12 @@ defmodule Facturx.CII do
 
     prune(%{
       id: path_text(li, ["ram:AssociatedDocumentLineDocument", "ram:LineID"]),
+      note:
+        path_text(li, [
+          "ram:AssociatedDocumentLineDocument",
+          "ram:IncludedNote",
+          "ram:Content"
+        ]),
       name: path_text(li, ["ram:SpecifiedTradeProduct", "ram:Name"]),
       net_price:
         num(
@@ -785,6 +852,8 @@ defmodule Facturx.CII do
   defp parse_party(p) do
     prune(%{
       name: child_text(p, "ram:Name"),
+      global_id: child_text(p, "ram:GlobalID"),
+      global_scheme: attr(find(p, "ram:GlobalID"), "schemeID"),
       legal_id: path_text(p, ["ram:SpecifiedLegalOrganization", "ram:ID"]),
       legal_scheme: attr(path(p, ["ram:SpecifiedLegalOrganization", "ram:ID"]), "schemeID"),
       vat: path_text(p, ["ram:SpecifiedTaxRegistration", "ram:ID"]),
@@ -799,8 +868,11 @@ defmodule Facturx.CII do
     prune(%{
       postcode: child_text(a, "ram:PostcodeCode"),
       line_one: child_text(a, "ram:LineOne"),
+      line_two: child_text(a, "ram:LineTwo"),
+      line_three: child_text(a, "ram:LineThree"),
       city: child_text(a, "ram:CityName"),
-      country: child_text(a, "ram:CountryID")
+      country: child_text(a, "ram:CountryID"),
+      country_subdivision: child_text(a, "ram:CountrySubDivisionName")
     })
   end
 
@@ -814,15 +886,39 @@ defmodule Facturx.CII do
     })
   end
 
-  defp parse_totals(nil), do: %{}
+  # BT-110: the one in the invoice currency, else an unlabelled one. Never falls
+  # back to "the first", which would claim BT-111 when only that is present.
+  defp tax_total(ms, currency) do
+    totals = find_all(ms, "ram:TaxTotalAmount")
 
-  defp parse_totals(ms) do
+    (Enum.find(totals, &(attr(&1, "currencyID") == currency)) ||
+       Enum.find(totals, &(attr(&1, "currencyID") == nil)))
+    |> node_text()
+  end
+
+  # BT-111: only ever the one in the accounting currency, and only if there is one.
+  defp tax_total_in_tax_currency(_ms, nil), do: nil
+
+  defp tax_total_in_tax_currency(ms, tax_currency) do
+    ms
+    |> find_all("ram:TaxTotalAmount")
+    |> Enum.find(&(attr(&1, "currencyID") == tax_currency))
+    |> node_text()
+  end
+
+  defp parse_totals(nil, _currency, _tax_currency), do: %{}
+
+  defp parse_totals(ms, currency, tax_currency) do
     prune(%{
       line_total: num(child_text(ms, "ram:LineTotalAmount")),
       charge_total: num(child_text(ms, "ram:ChargeTotalAmount")),
       allowance_total: num(child_text(ms, "ram:AllowanceTotalAmount")),
       tax_basis_total: num(child_text(ms, "ram:TaxBasisTotalAmount")),
-      tax_total: num(child_text(ms, "ram:TaxTotalAmount")),
+      tax_total: num(tax_total(ms, currency)),
+      # BT-111 shares BT-110's element name; only @currencyID tells them apart, so
+      # a conformant producer emitting the accounting-currency total first must not
+      # end up swapping the two.
+      tax_total_in_tax_currency: num(tax_total_in_tax_currency(ms, tax_currency)),
       rounding: num(child_text(ms, "ram:RoundingAmount")),
       grand_total: num(child_text(ms, "ram:GrandTotalAmount")),
       prepaid: num(child_text(ms, "ram:TotalPrepaidAmount")),

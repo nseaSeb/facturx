@@ -304,9 +304,17 @@ defmodule Facturx.ValidateTest do
       assert {:ok, :valid} = Facturx.validate(xml, opts)
     end
 
-    # BR-FX-EN-04 accepts BT-72, BG-14 *or* BG-26. This checks the third route: no
-    # delivery date, no document period, only a line period.
-    test "a line period alone satisfies BR-FX-EN-04", %{opts: opts} do
+    # BR-FX-EN-04 is not the general rule it reads as. Two limits, both checked in
+    # the bundled XSL rather than assumed:
+    #
+    #   * its template only matches invoices whose seller *and* buyer are in DE, so
+    #     it never fires on a French invoice;
+    #   * its assertion is a conjunction — a line period satisfies only the first
+    #     half, the second still wanting BT-72 or a non-empty delivery container.
+    #
+    # So this checks what is actually true: a line period is emitted and accepted,
+    # with the only finding being the R008 warning about that empty container.
+    test "a line period is accepted, R008 aside", %{opts: opts} do
       d = &Decimal.new/1
 
       {:ok, xml} =
@@ -329,9 +337,9 @@ defmodule Facturx.ValidateTest do
           })
         )
 
-      # R008 still warns: with no delivery data CII forces an empty container.
       assert {:ok, {:valid_with_warnings, findings}} = Facturx.validate(xml, opts)
-      refute Enum.any?(findings, &(&1.message =~ "BR-FX-EN-04"))
+      assert Enum.all?(findings, &(&1.flag == "warning"))
+      assert Enum.any?(findings, &(&1.message =~ "R008"))
     end
 
     # BR-CO-11/12/13/16 tie the allowance and charge totals to the entries and to
@@ -399,6 +407,62 @@ defmodule Facturx.ValidateTest do
 
       assert {:ok, :valid} = Facturx.validate_xsd(xml), "the XSD does no arithmetic"
       assert {:error, {:invalid, _}} = Facturx.validate(xml, opts)
+    end
+
+    # The last five core items together, and two traps only the schematron sees:
+    # a line note must not carry ram:SubjectCode (that is EXT-FR-FE-183, a French
+    # extension), and BT-6 must differ from the invoice currency or BT-110 and
+    # BT-111 become indistinguishable — which cascades into BR-53 and BR-CO-15.
+    test "tax representative, VAT group, full address, line note and BT-111", %{opts: opts} do
+      d = &Decimal.new/1
+
+      {:ok, xml} =
+        Facturx.build(
+          invoice(%{
+            currency: "USD",
+            tax_currency: "EUR",
+            tax_representative: %{
+              name: "Repr Fiscal SARL",
+              vat: "FR55555555555",
+              address: %{line_one: "9 bd", postcode: "13001", city: "Marseille", country: "FR"}
+            },
+            ship_to: %{
+              name: "Entrepôt",
+              address: %{
+                line_one: "3 ch",
+                line_two: "Bât. B",
+                line_three: "Quai 4",
+                postcode: "31000",
+                city: "Toulouse",
+                country: "FR",
+                country_subdivision: "Occitanie"
+              }
+            },
+            lines: [
+              %{
+                id: "1",
+                name: "P",
+                net_price: d.("100.00"),
+                quantity: d.("2"),
+                unit: "C62",
+                vat_category: "S",
+                vat_rate: d.("20.00"),
+                line_total: d.("200.00"),
+                note: "Livré en 2 colis"
+              }
+            ],
+            totals: %{
+              line_total: d.("200.00"),
+              tax_basis_total: d.("200.00"),
+              tax_total: d.("40.00"),
+              tax_total_in_tax_currency: d.("36.50"),
+              grand_total: d.("240.00"),
+              due_payable: d.("240.00")
+            }
+          })
+        )
+
+      assert {:ok, :valid} = Facturx.validate(xml, opts)
     end
 
     test "payment means break no rule", %{opts: opts} do

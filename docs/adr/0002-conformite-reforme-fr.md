@@ -159,31 +159,20 @@ défaut mais reste désactivable.
   éléments respecte les séquences du schéma. Une référence verte a été relevée
   sur `main` avant modification, afin qu'un échec ultérieur soit imputable.
 
-### Reste à faire (hors périmètre de ce jalon)
+### État du socle (mis à jour le 2026-07-30)
 
-Sur les 116 données réglementaires du Flux 1, **85 sont émises** (50 au moment de
-la décision initiale). L'[Annexe B](../reference/mapping-cii-flux1.md) détaille
-chaque cas.
+**96 / 116 données réglementaires émises** — le socle est couvert dans les limites
+du profil EN 16931. Détail en [Annexe B](../reference/mapping-cii-flux1.md).
 
-**Comblé depuis** : `BT-148`/`BT-147` (prix brut et rabais sur prix), `BG-1`
-(notes), `BG-14` (période de facturation), `BT-120`/`BT-121` (motif d'exonération
-de TVA). `BT-148` était le **seul trou inconditionnel** — obligatoire dans un
-groupe obligatoire — donc une facture produite par la lib ne peut plus être
-structurellement incomplète au regard du socle.
+Les 20 restantes ne sont pas atteignables avec le schéma embarqué : 19 sont des
+extensions `EXT-FR-FE-*` (toutes de niveau ligne, toutes en trajectoire CIBLE), et
+la dernière est `BT-127-00`, le conteneur de note de ligne en `0..n` là où
+l'EN 16931 en autorise une seule.
 
-Reste, par priorité :
-
-1. **Blocs optionnels restants** — représentant fiscal (`BG-11`), assujetti unique
-   (`BT-29d`), adresse de livraison complète (`BT-76`/`BT-79`/`BT-165`), note de
-   ligne (`BT-127`).
-2. **`BT-111`** (TVA en devise de comptabilisation) — piège : même chemin CII que
-   `BT-110`, c'est la *seconde* occurrence de `TaxTotalAmount` (`maxOccurs="2"`).
-   Demanderait un champ distinct et `TaxCurrencyCode`.
+Aller plus loin suppose donc d'embarquer les XSD `F1_FULL` du PPF et de valider
+contre eux — décision distincte, à prendre si la trajectoire CIBLE devient
+contraignante. À peser contre le poids de `priv/`, déjà ~90 % du paquet Hex, et
+contre les conditions de redistribution de ces artefacts.
 
 Hors socle réglementaire, `BG-16` (moyens de paiement) est fait : l'administration
 n'en a pas besoin, le client si.
-
-Puis, si le besoin apparaît : les `EXT-FR-FE-*` de niveau ligne (tous en
-trajectoire CIBLE) et les XSD Base/Full du PPF comme cibles de validation
-supplémentaires — en vérifiant au préalable les conditions de redistribution de
-ces artefacts, `priv/` étant embarqué dans le paquet Hex.

@@ -14,12 +14,21 @@ defmodule Facturx.Invoice do
   `docs/reference/reforme-fr.md`.
   """
 
-  @typedoc "A postal address."
+  @typedoc """
+  A postal address.
+
+  `:country` is the only part CII requires once an address is present. Note the
+  wire order, which is not the intuitive one: postcode, then the three lines, then
+  the city, the country, and finally the subdivision.
+  """
   @type address :: %{
           optional(:line_one) => String.t(),
+          optional(:line_two) => String.t(),
+          optional(:line_three) => String.t(),
           optional(:postcode) => String.t(),
           optional(:city) => String.t(),
-          optional(:country) => String.t()
+          optional(:country) => String.t(),
+          optional(:country_subdivision) => String.t()
         }
 
   @typedoc "An optional trade contact."
@@ -29,9 +38,25 @@ defmodule Facturx.Invoice do
           optional(:email) => String.t()
         }
 
-  @typedoc "A seller/buyer/ship-to party."
+  @typedoc """
+  A seller / buyer / ship-to / tax-representative party.
+
+  `:legal_id` is the SIREN (BT-30 / BT-47) with `:legal_scheme` defaulting to
+  `"0002"`. `:global_id` is BT-29d, the SIREN of a French *assujetti unique* (VAT
+  group), whose scheme is `"0231"` — a different identifier answering a different
+  question, so both may appear. `:vat` is the VAT identifier (BT-31 / BT-48 /
+  BT-63).
+
+  Note that the two scheme defaults are written into the XML, so parsing a document
+  built without them returns them anyway: `parse(build(%{legal_id: "…"}))` comes
+  back carrying `legal_scheme: "0002"`. The document is unchanged, the struct is
+  normalised — the same already applies to a line's `:unit` (`"C62"`) and a tax
+  entry's `:type` (`"VAT"`).
+  """
   @type party :: %{
           optional(:name) => String.t(),
+          optional(:global_id) => String.t(),
+          optional(:global_scheme) => String.t(),
           optional(:legal_id) => String.t(),
           optional(:legal_scheme) => String.t(),
           optional(:vat) => String.t(),
@@ -49,7 +74,15 @@ defmodule Facturx.Invoice do
   container requiring an amount.
 
   `:billing_period` is BG-26, the period this line covers — same shape as the
-  document-level `t:period/0`, and one of the three things `BR-FX-EN-04` accepts.
+  document-level `t:period/0`. It is one of the three things `BR-FX-EN-04` lists,
+  but note that rule only fires on DE-to-DE invoices and its assertion is a
+  conjunction: a line period alone does not satisfy it.
+
+  `:note` is BT-127, a plain string. Two differences from the document-level
+  `:notes`: CII allows only **one** per line, and the EN 16931 profile does **not**
+  allow a subject code there — that is `EXT-FR-FE-183`, a French extension on the
+  target trajectory. Emitting one makes the schematron reject the invoice, so there
+  is no field for it.
   """
   @type line :: %{
           optional(:id) => String.t(),
@@ -64,7 +97,8 @@ defmodule Facturx.Invoice do
           optional(:line_total) => Decimal.t(),
           optional(:allowances) => [allowance_charge()],
           optional(:charges) => [allowance_charge()],
-          optional(:billing_period) => period()
+          optional(:billing_period) => period(),
+          optional(:note) => String.t()
         }
 
   @typedoc """
@@ -203,6 +237,14 @@ defmodule Facturx.Invoice do
   `:prepaid` (BT-113) is what has already been paid — the down payments a final
   invoice nets off, so it goes with `:preceding_invoices`. `:rounding` is BT-114.
 
+  `:tax_total_in_tax_currency` is BT-111, the VAT total restated in the accounting
+  currency. It is the **second** `TaxTotalAmount` occurrence rather than a separate
+  element, and requires `:tax_currency` on the invoice (`BR-53`).
+
+  `:tax_currency` must **differ** from `:currency`: the schematron tells BT-110 and
+  BT-111 apart by their `currencyID`, so two identical ones are indistinguishable
+  and get rejected — which also cascades into `BR-CO-15`.
+
   Beware the wire order, which does not follow the BT numbering: CII emits
   `ChargeTotalAmount` **before** `AllowanceTotalAmount`.
   """
@@ -212,6 +254,7 @@ defmodule Facturx.Invoice do
           optional(:allowance_total) => Decimal.t(),
           optional(:tax_basis_total) => Decimal.t(),
           optional(:tax_total) => Decimal.t(),
+          optional(:tax_total_in_tax_currency) => Decimal.t(),
           optional(:rounding) => Decimal.t(),
           optional(:grand_total) => Decimal.t(),
           optional(:prepaid) => Decimal.t(),
@@ -226,9 +269,11 @@ defmodule Facturx.Invoice do
           issue_date: Date.t() | nil,
           due_date: Date.t() | nil,
           currency: String.t(),
+          tax_currency: String.t() | nil,
           notes: [note()],
           seller: party() | nil,
           buyer: party() | nil,
+          tax_representative: party() | nil,
           ship_to: party() | nil,
           delivery_date: Date.t() | nil,
           billing_period: period() | nil,
@@ -252,14 +297,17 @@ defmodule Facturx.Invoice do
             issue_date: nil,
             due_date: nil,
             currency: "EUR",
+            # BT-6 — VAT accounting currency, required alongside BT-111 (BR-53)
+            tax_currency: nil,
             # BG-1 — document-level notes (BT-22 content, BT-21 subject code)
             notes: [],
             seller: nil,
             buyer: nil,
+            # BG-11 — seller's tax representative (its BT-63 VAT id is the point)
+            tax_representative: nil,
             ship_to: nil,
             delivery_date: nil,
-            # BG-14 — invoicing period. One of BT-72 / BG-14 / BG-26 is required by
-            # BR-FX-EN-04 on anything but a down-payment invoice.
+            # BG-14 — invoicing period.
             billing_period: nil,
             # BG-3 — preceding invoice references, i.e. the down payment invoices a
             # final invoice nets off. Goes with the B4/S4/M4 frameworks.

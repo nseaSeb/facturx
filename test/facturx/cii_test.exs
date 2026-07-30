@@ -561,6 +561,192 @@ defmodule Facturx.CIITest do
     end
   end
 
+  # The last five items of the regulatory core.
+  describe "tax representative, VAT group, full address, line note, accounting currency" do
+    defp complete_invoice do
+      d = &Decimal.new/1
+
+      %{
+        sample_invoice()
+        | # facture in USD, VAT accounted in EUR — the two currencies must differ,
+          # the schematron telling BT-110 from BT-111 by their currencyID
+          currency: "USD",
+          tax_currency: "EUR",
+          # BT-29d — SIREN of an assujetti unique. The scheme default is written into
+          # the XML, so it comes back on parse; set it to keep the round-trip exact.
+          # Map.merge, not %{map | …}: the update syntax requires existing keys.
+          seller:
+            Map.merge(sample_invoice().seller, %{
+              global_id: "987654321",
+              global_scheme: "0231"
+            }),
+          # BG-11 — what matters is its BT-63 VAT id
+          tax_representative: %{
+            name: "Repr Fiscal SARL",
+            vat: "FR55555555555",
+            address: %{line_one: "9 bd", postcode: "13001", city: "Marseille", country: "FR"}
+          },
+          ship_to: %{
+            name: "Entrepôt",
+            address: %{
+              line_one: "3 ch",
+              line_two: "Bât. B",
+              line_three: "Quai 4",
+              postcode: "31000",
+              city: "Toulouse",
+              country: "FR",
+              country_subdivision: "Occitanie"
+            }
+          },
+          lines: [
+            %{
+              id: "1",
+              name: "P",
+              net_price: d.("100.00"),
+              quantity: d.("2"),
+              unit: "C62",
+              vat_category: "S",
+              vat_rate: d.("20.00"),
+              line_total: d.("200.00"),
+              note: "Livré en 2 colis"
+            }
+          ],
+          totals: %{
+            line_total: d.("200.00"),
+            tax_basis_total: d.("200.00"),
+            tax_total: d.("40.00"),
+            tax_total_in_tax_currency: d.("36.50"),
+            grand_total: d.("240.00"),
+            due_payable: d.("240.00")
+          }
+      }
+    end
+
+    test "all five validate and round-trip together" do
+      inv = complete_invoice()
+      {:ok, xml} = Facturx.build(inv)
+
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "BT-29d carries scheme 0231, and precedes the name" do
+      {:ok, xml} = Facturx.build(complete_invoice())
+
+      assert xml =~ ~s(<ram:GlobalID schemeID="0231">987654321</ram:GlobalID>)
+
+      # Scope to the seller: ram:Name also names a product, and lines come first.
+      [seller] = Regex.run(~r|<ram:SellerTradeParty>.*?</ram:SellerTradeParty>|s, xml)
+      global = :binary.match(seller, "ram:GlobalID")
+      name = :binary.match(seller, "ram:Name")
+      assert elem(global, 0) < elem(name, 0)
+    end
+
+    test "the tax representative follows the buyer" do
+      {:ok, xml} = Facturx.build(complete_invoice())
+
+      buyer = :binary.match(xml, "ram:BuyerTradeParty")
+      rep = :binary.match(xml, "ram:SellerTaxRepresentativeTradeParty")
+      assert elem(buyer, 0) < elem(rep, 0)
+      assert xml =~ "<ram:ID schemeID=\"VA\">FR55555555555</ram:ID>"
+    end
+
+    test "the address emits its lines in order, subdivision after the country" do
+      {:ok, xml} = Facturx.build(complete_invoice())
+
+      assert xml =~
+               "<ram:LineOne>3 ch</ram:LineOne>" <>
+                 "<ram:LineTwo>Bât. B</ram:LineTwo>" <>
+                 "<ram:LineThree>Quai 4</ram:LineThree>" <>
+                 "<ram:CityName>Toulouse</ram:CityName>" <>
+                 "<ram:CountryID>FR</ram:CountryID>" <>
+                 "<ram:CountrySubDivisionName>Occitanie</ram:CountrySubDivisionName>"
+    end
+
+    # EN 16931 does not allow ram:SubjectCode on a line note — that is
+    # EXT-FR-FE-183, a French extension. Emitting one gets the invoice rejected, so
+    # :note is a plain string with no way to ask for it.
+    test "the line note carries content only, no subject code" do
+      {:ok, xml} = Facturx.build(complete_invoice())
+
+      assert xml =~
+               "<ram:IncludedNote><ram:Content>Livré en 2 colis</ram:Content></ram:IncludedNote>"
+
+      [line] =
+        Regex.run(
+          ~r|<ram:AssociatedDocumentLineDocument>.*?</ram:AssociatedDocumentLineDocument>|s,
+          xml
+        )
+
+      refute line =~ "SubjectCode"
+    end
+
+    test "BT-111 without BT-6 is refused, with a domain error" do
+      inv = %{complete_invoice() | tax_currency: nil}
+
+      assert {:error, {:tax_currency_missing, :tax_total_in_tax_currency}} =
+               Facturx.build(inv)
+    end
+
+    # Identical currencies make BT-110 and BT-111 indistinguishable — the XSD is
+    # happy, the schematron is not (BR-53, cascading into BR-CO-15).
+    test "BT-6 identical to the invoice currency is refused" do
+      inv = %{complete_invoice() | tax_currency: "USD"}
+
+      assert {:error, {:tax_currency_not_distinct, "USD"}} = Facturx.build(inv)
+    end
+
+    # The two are the same element; only @currencyID separates them, so parsing must
+    # not rely on document order.
+    test "BT-110 and BT-111 are matched by currency, not by position" do
+      inv = complete_invoice()
+      {:ok, xml} = Facturx.build(inv)
+
+      swapped =
+        String.replace(
+          xml,
+          ~s(<ram:TaxTotalAmount currencyID="USD">40.00</ram:TaxTotalAmount>) <>
+            ~s(<ram:TaxTotalAmount currencyID="EUR">36.50</ram:TaxTotalAmount>),
+          ~s(<ram:TaxTotalAmount currencyID="EUR">36.50</ram:TaxTotalAmount>) <>
+            ~s(<ram:TaxTotalAmount currencyID="USD">40.00</ram:TaxTotalAmount>)
+        )
+
+      refute swapped == xml, "the fixture should contain both totals"
+      {:ok, parsed} = Facturx.parse(swapped)
+      assert Decimal.equal?(parsed.totals.tax_total, Decimal.new("40.00"))
+      assert Decimal.equal?(parsed.totals.tax_total_in_tax_currency, Decimal.new("36.50"))
+    end
+
+    # 0231 means "SIREN of a French assujetti unique" (BT-29d), which the annexe puts
+    # on the seller alone. Defaulting it everywhere would mislabel a buyer's GLN.
+    test "the 0231 scheme default applies to the seller only" do
+      inv =
+        put_in(
+          sample_invoice().buyer,
+          Map.put(sample_invoice().buyer, :global_id, "5790000435975")
+        )
+
+      {:ok, xml} = Facturx.build(inv)
+
+      assert xml =~ "<ram:GlobalID>5790000435975</ram:GlobalID>"
+      refute xml =~ ~s(<ram:GlobalID schemeID="0231">5790000435975</ram:GlobalID>)
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "BT-6 precedes the invoice currency, and BT-111 is the second VAT total" do
+      {:ok, xml} = Facturx.build(complete_invoice())
+
+      assert xml =~
+               "<ram:TaxCurrencyCode>EUR</ram:TaxCurrencyCode>" <>
+                 "<ram:InvoiceCurrencyCode>USD</ram:InvoiceCurrencyCode>"
+
+      assert xml =~
+               ~s(<ram:TaxTotalAmount currencyID="USD">40.00</ram:TaxTotalAmount>) <>
+                 ~s(<ram:TaxTotalAmount currencyID="EUR">36.50</ram:TaxTotalAmount>)
+    end
+  end
+
   # BG-26 — the period a line covers. Same SpecifiedPeriodType as BG-14, so the
   # emitter is reused; what needed checking is where it lands in the line.
   describe "line billing period (BG-26)" do

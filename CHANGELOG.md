@@ -11,7 +11,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   the code, the reverse of the BT numbering.
 - **Invoicing period** (BG-14) — `Facturx.Invoice.billing_period`, a
   `%{start_date: …, end_date: …}` (BT-73 / BT-74). Either date may stand alone; an
-  empty map emits nothing. Satisfies `BR-FX-EN-04` as an alternative to BT-72.
+  empty map emits nothing.
 - **Gross price and price discount** (BT-148 / BT-147) — `:gross_price` and
   `:price_discount` on a line. `BT-148` was the **only unconditional gap** left in
   the regulatory core: mandatory inside `BG-29`, which is itself mandatory. A
@@ -55,14 +55,40 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - **Line invoicing period** (BG-26) — `:billing_period` on a line, same shape as
   the document-level one (BT-134 / BT-135). Reuses the BG-14 emitter, the CII type
   being identical; what needed care was its position, after the line's VAT and
-  before its allowances. Note it satisfies `BR-FX-EN-04` on its own — that rule
-  accepts BT-72, BG-14 *or* BG-26 — which a test now checks.
+  before its allowances.
+
+  A note on `BR-FX-EN-04`, which lists BT-72, BG-14 and BG-26 and reads like a
+  general rule: it is not one. Its template only matches invoices whose seller
+  *and* buyer are in DE, so it never fires on a French invoice, and its assertion
+  is a conjunction — a line period satisfies the first half only, the second still
+  wanting BT-72 or a non-empty delivery container.
+- **The last five core items** — `:tax_representative` (BG-11, whose BT-63 VAT id is
+  the point), `:global_id` on a party (BT-29d, the SIREN of an *assujetti unique*,
+  scheme `0231`), the full delivery address (`:line_two`, `:line_three`,
+  `:country_subdivision` — BT-76 / BT-165 / BT-79), `:note` on a line (BT-127) and
+  `:tax_currency` + `:tax_total_in_tax_currency` (BT-6 / BT-111).
+
+  ⚠️ Two constraints the schematron caught and the XSD does not see:
+
+  - A **line note must not carry a subject code**. That is `EXT-FR-FE-183`, a French
+    extension on the target trajectory, not part of EN 16931 — emitting one gets the
+    invoice rejected. Hence `:note` on a line is a plain string, with no way to ask
+    for one.
+  - **`:tax_currency` must differ from `:currency`.** BT-110 and BT-111 are two
+    occurrences of the same element, told apart by their `currencyID`; identical
+    currencies make them indistinguishable and trip `BR-53`, cascading into
+    `BR-CO-15`.
+
+  Note also that the scheme defaults (`0002`, `0231`) are written into the XML, so
+  parsing a document built without them returns them anyway — the document is
+  unchanged, the struct normalised.
+
 - **Payment means** (BG-16) — `Facturx.Invoice.payment_means`, a list covering the
   credited account (`:iban` / `:account_name` / `:account_id`, BT-84 / BT-85), its
   institution (`:bic`, BT-86), a direct debit's debited account (`:payer_iban`,
   BT-91) and card details (`:card_id` / `:cardholder_name`, BT-87 / BT-88), plus
   BT-81 / BT-82. **Not** part of the regulatory Flux 1 set — the tax administration
-  does not need them — so they do not enter the 85/116 count; but an invoice without
+  does not need them — so they do not enter the 96/116 count; but an invoice without
   payment details is unusable in practice.
 
   ⚠️ `:card_id` must be **at most 10 characters** (rule `BR-51`, the PCI standard of
@@ -79,7 +105,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   invoice. The legitimate combinations still pass: a down-payment invoice under a
   standard framework (`S1` + `386`), and a final invoice with an ordinary type.
 
-Coverage of the regulatory Flux 1 data set goes from 50/116 to **85/116** — see
+Coverage of the regulatory Flux 1 data set goes from 50/116 to **96/116** — see
 `docs/reference/mapping-cii-flux1.md`.
 
 ### Added (tooling)
