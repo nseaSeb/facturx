@@ -68,9 +68,9 @@ defmodule Facturx.Invoice do
   Required in that case by the French mandate, whose invoicing framework codes
   `B4`/`S4`/`M4` mean exactly "final invoice after a down payment".
 
-  `:number` is BT-25, `:issue_date` BT-26. Note that rule `G1.60` forbids pairing
-  a `B4`/`S4`/`M4` framework with `type_code` `386`, `500` or `503` — that cross
-  constraint is **not** enforced by this library.
+  `:number` is BT-25, `:issue_date` BT-26. Rule `G1.60` forbids pairing a
+  `B4`/`S4`/`M4` framework with a down-payment `:type_code` (`386`, `500`, `503`);
+  `Facturx.CII.build/2` enforces that when `:validate_business_process` is on.
   """
   @type preceding_invoice :: %{
           optional(:number) => String.t(),

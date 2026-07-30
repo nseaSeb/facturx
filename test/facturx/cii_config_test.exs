@@ -44,6 +44,19 @@ defmodule Facturx.CIIConfigTest do
                Facturx.build(invoice(@peppol), validate_business_process: true)
     end
 
+    test "config also enables the G1.60 cross-field check" do
+      Application.put_env(:facturx, Facturx.CII, validate_business_process: true)
+
+      final = %{invoice("S4") | type_code: "386"}
+
+      assert {:error, {:final_invoice_type_conflict, %{business_process: "S4", type_code: "386"}}} =
+               Facturx.build(final)
+
+      # ... and stays off when the config says so
+      Application.put_env(:facturx, Facturx.CII, validate_business_process: false)
+      assert {:ok, _} = Facturx.build(final)
+    end
+
     test "config reaches generate/3 too" do
       Application.put_env(:facturx, Facturx.CII, validate_business_process: true)
 

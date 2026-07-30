@@ -561,6 +561,61 @@ defmodule Facturx.CIITest do
     end
   end
 
+  # Rule G1.60 — a cross-field constraint between BT-23 and BT-3, so neither the
+  # XSD nor the EN 16931 schematron catches it: without this check the first sign
+  # would be a platform refusing the invoice.
+  describe "G1.60: final-invoice frameworks vs down-payment type codes" do
+    defp built?(business_process, type_code) do
+      inv = %{sample_invoice() | business_process: business_process, type_code: type_code}
+
+      case Facturx.build(inv, validate_business_process: true) do
+        {:ok, _} -> :ok
+        {:error, reason} -> reason
+      end
+    end
+
+    test "every forbidden pairing is rejected" do
+      for framework <- ~w(B4 S4 M4), type <- ~w(386 500 503) do
+        assert {:final_invoice_type_conflict, %{business_process: ^framework, type_code: ^type}} =
+                 built?(framework, type),
+               "#{framework} + #{type} should have been rejected"
+      end
+    end
+
+    test "a final invoice with an ordinary type code is fine" do
+      for framework <- ~w(B4 S4 M4), type <- ~w(380 381 384) do
+        assert :ok = built?(framework, type)
+      end
+    end
+
+    # The legitimate down payment: type 386 belongs with a *standard* framework,
+    # since the invoice is the down payment rather than what follows it.
+    test "a down-payment invoice under a standard framework is fine" do
+      for framework <- ~w(B1 S1 M1 B2 S2 M2), type <- ~w(386 500 503) do
+        assert :ok = built?(framework, type)
+      end
+    end
+
+    test "the check rides on validate_business_process, so it is off by default" do
+      inv = %{sample_invoice() | business_process: "S4", type_code: "386"}
+
+      assert {:ok, _} = Facturx.build(inv)
+      assert {:ok, _} = Facturx.build(inv, validate_business_process: false)
+
+      assert {:error, {:final_invoice_type_conflict, _}} =
+               Facturx.build(inv, validate_business_process: true)
+    end
+
+    test "config enables it like the closed list" do
+      # covered in Facturx.CIIConfigTest for the env-mutating path; here just check
+      # the two checks are independent of each other
+      inv = %{sample_invoice() | business_process: "X9", type_code: "386"}
+
+      assert {:error, {:invalid_business_process, "X9"}} =
+               Facturx.build(inv, validate_business_process: true)
+    end
+  end
+
   # "" is a plausible value from a form field or a NOT NULL DEFAULT '' column.
   describe "empty-string codes are treated as absent" do
     test "an empty BT-23 emits no element and round-trips" do

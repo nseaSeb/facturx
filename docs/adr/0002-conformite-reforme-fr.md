@@ -112,11 +112,14 @@ son garde-fou sans avoir à passer l'option partout. Le défaut « sûr » est c
 qui n'enferme personne ; c'est aussi le seul qui rende cette version réellement
 non cassante.
 
-En revanche la règle **G1.60** (un cadre `B4`/`S4`/`M4` interdit les `type_code`
-`386`/`500`/`503`) n'est **pas** implémentée : c'est une contrainte croisée entre
-deux champs, qui appellerait un module de règles de gestion — un chantier
-distinct, à ouvrir si le besoin se confirme. La liste fermée ne vaut donc pas
-conformité BT-23 complète, et c'est documenté comme tel.
+La règle **G1.60** (un cadre `B4`/`S4`/`M4` interdit les `type_code`
+`386`/`500`/`503`) suit le même régime, ajoutée une fois le workflow acompte
+devenu concret. Motif d'en faire une exception au principe « pas de contrainte
+croisée » : étant croisée précisément, **ni le XSD ni le Schematron EN 16931 ne la
+voient**, donc sans ce contrôle le premier signal serait un rejet de plateforme.
+
+Cela ne vaut toujours pas conformité BT-23 complète : les autres règles `BR-FR-*`
+restent absentes, faute d'artefact exploitable publié.
 
 ### 5. BT-8 est validé par défaut, avec échappatoire
 
@@ -132,9 +135,9 @@ pipeline `extract → parse → corriger → build` sur une facture reçue est u
 central, et bloquer sans recours y serait une impasse.
 
 Le XSD ne peut pas l'attraper (`qdt:TimeReferenceCodeType` est un `xs:token` sans
-énumération), et le Schematron n'est pas exécutable en CI puisqu'il exige un
-Saxon externe : sans ce contrôle en Elixir, une valeur erronée ne se révélerait
-qu'au rejet par la plateforme. Le cas est concret — les valeurs `3` / `35` / `432`
+énumération). Le Schematron, lui, la voit, et tourne désormais en CI via l'image
+de `docker/` — mais il exige un service externe, là où ce contrôle-ci est immédiat
+et sans dépendance. Le cas est concret — les valeurs `3` / `35` / `432`
 appartiennent au subset UNTDID **2005** de la syntaxe UBL et sont couramment
 citées à tort pour du CII.
 

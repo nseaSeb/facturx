@@ -35,6 +35,13 @@ defmodule Facturx.CII do
       whose values are not restricted (Peppol uses `urn:fdc:peppol.eu:…`, Chorus
       Pro used `A1`/`A2`).
 
+      Enabling it also enforces rule **G1.60**: a `B4`/`S4`/`M4` framework means
+      "final invoice after a down payment", so it cannot be paired with a
+      down-payment `:type_code` — `386`, `500` or `503`. That returns
+      `{:error, {:final_invoice_type_conflict, %{business_process: …, type_code: …}}}`.
+      Being a cross-field rule, neither the XSD nor the EN 16931 schematron sees
+      it.
+
     * `:validate_vat_point_date` — check BT-8 (`:tax_due_date_type_code`, or a
       per-entry `:due_date_type_code`) against `Facturx.vat_point_date_codes/0`,
       returning `{:error, {:invalid_vat_point_date_code, code}}`. **Defaults to
@@ -66,8 +73,10 @@ defmodule Facturx.CII do
 
   def build(%Invoice{} = inv, opts) do
     profile = Keyword.get(opts, :profile, inv.profile || :en16931)
+    check_bp? = validate_bp?(opts)
 
-    with :ok <- check_business_process(inv.business_process, validate_bp?(opts)),
+    with :ok <- check_business_process(inv.business_process, check_bp?),
+         :ok <- check_final_invoice_type(inv, check_bp?),
          :ok <- check_vat_point_dates(inv, flag?(opts, :validate_vat_point_date, true)) do
       doc =
         {"rsm:CrossIndustryInvoice", @ns,
@@ -116,6 +125,26 @@ defmodule Facturx.CII do
   end
 
   defp check_business_process(code, _check?), do: {:error, {:invalid_business_process, code}}
+
+  # Rule G1.60. The B4/S4/M4 frameworks mean "final invoice after a down payment",
+  # so the document cannot itself be a down payment: 386 (down payment invoice),
+  # 500 (self-billed down payment invoice) or 503 (down payment credit note).
+  #
+  # Rides on :validate_business_process because it is French, like G1.02 — and it
+  # is worth having: being a cross-field constraint, neither the XSD nor the
+  # EN 16931 schematron catches it, so the first sign would be a platform refusing
+  # the invoice.
+  @final_invoice_frameworks ~w(B4 S4 M4)
+  @down_payment_type_codes ~w(386 500 503)
+
+  defp check_final_invoice_type(_inv, false), do: :ok
+
+  defp check_final_invoice_type(%Invoice{business_process: bp, type_code: type}, true)
+       when bp in @final_invoice_frameworks and type in @down_payment_type_codes do
+    {:error, {:final_invoice_type_conflict, %{business_process: bp, type_code: type}}}
+  end
+
+  defp check_final_invoice_type(_inv, _check?), do: :ok
 
   # BT-8 lives per VAT breakdown entry, so every emitted code is checked — the
   # document-level one and any per-entry override.

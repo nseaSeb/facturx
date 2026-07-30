@@ -145,8 +145,12 @@ them (BG-3). This is the counterpart of the `B4`/`S4`/`M4` invoicing frameworks:
 ```
 
 Rule `G1.60` forbids pairing a `B4`/`S4`/`M4` framework with `type_code` `386`,
-`500` or `503` — a cross constraint this library does **not** enforce, and which
-the EN 16931 schematron does not carry either, being French.
+`500` or `503`: the framework already says "final invoice after a down payment",
+so the document cannot itself be one. That is enforced along with the closed list
+(`validate_business_process: true`), returning
+`{:error, {:final_invoice_type_conflict, %{business_process: …, type_code: …}}}`.
+Being a cross-field rule, neither the XSD nor the EN 16931 schematron sees it —
+the latter being French.
 
 Two things the XSD will not catch, so worth knowing:
 
@@ -222,8 +226,9 @@ config in both directions.
 
 Two caveats worth knowing before you rely on this:
 
-- Rule **G1.60** (a `B4`/`S4`/`M4` framework forbids `type_code` `386`/`500`/`503`)
-  is **not** enforced — the closed list is not full BT-23 conformance.
+- Enabling the check also enforces **G1.60** (see the down-payment section
+  above). Other French rules remain unenforced, so this is not full BT-23
+  conformance.
 - The **Base_/Full_ file naming** that declares the PPF profile (rule S1.06) is
   the caller's or the platform's job, not this library's.
 

@@ -30,6 +30,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   other date in the document is `udt:`. The reference block is also emitted *after*
   the monetary summation, per `HeaderTradeSettlementType`.
 
+- **Rule G1.60 is now enforced**, alongside the G1.02 closed list and under the
+  same `:validate_business_process` opt-in. A `B4`/`S4`/`M4` framework means "final
+  invoice after a down payment", so it cannot be paired with a down-payment
+  `:type_code` (`386`, `500`, `503`); that returns
+  `{:error, {:final_invoice_type_conflict, %{business_process: …, type_code: …}}}`.
+  Being a cross-field constraint, **neither the XSD nor the EN 16931 schematron
+  sees it** — without the check, the first sign would be a platform refusing the
+  invoice. The legitimate combinations still pass: a down-payment invoice under a
+  standard framework (`S1` + `386`), and a final invoice with an ordinary type.
+
 Coverage of the regulatory Flux 1 data set goes from 50/116 to **66/116** — see
 `docs/reference/mapping-cii-flux1.md`.
 
