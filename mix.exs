@@ -1,7 +1,7 @@
 defmodule Facturx.MixProject do
   use Mix.Project
 
-  @version "0.2.0"
+  @version "0.3.0"
   @source_url "https://github.com/nseaSeb/facturx"
 
   def project do
@@ -54,14 +54,25 @@ defmodule Facturx.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib priv mix.exs README.md CHANGELOG.md LICENSE)
+      files: ~w(lib priv docs mix.exs README.md CHANGELOG.md LICENSE)
     ]
   end
 
   defp docs do
     [
       main: "readme",
-      extras: ["README.md", "CHANGELOG.md", "docs/adr/0001-perimetre-et-architecture.md"]
+      extras: [
+        "README.md",
+        "CHANGELOG.md",
+        "docs/reference/reforme-fr.md",
+        "docs/reference/mapping-cii-flux1.md",
+        "docs/adr/0001-perimetre-et-architecture.md",
+        "docs/adr/0002-conformite-reforme-fr.md"
+      ],
+      groups_for_extras: [
+        Référence: ~r/docs\/reference\//,
+        "Décisions d'architecture": ~r/docs\/adr\//
+      ]
     ]
   end
 end

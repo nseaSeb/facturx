@@ -24,7 +24,42 @@ defmodule Facturx.CII do
   @doc """
   Build the CII XML for `invoice`.
 
-  Options: `:profile` overrides `invoice.profile`.
+  ## Options
+
+    * `:profile` — overrides `invoice.profile`.
+
+    * `:validate_business_process` — check BT-23 (`:business_process`) against
+      `Facturx.business_processes/0`, returning
+      `{:error, {:invalid_business_process, code}}`. **Defaults to `false`**,
+      because that list is the *French* one whereas BT-23 is an EN 16931 term
+      whose values are not restricted (Peppol uses `urn:fdc:peppol.eu:…`, Chorus
+      Pro used `A1`/`A2`).
+
+    * `:validate_vat_point_date` — check BT-8 (`:tax_due_date_type_code`, or a
+      per-entry `:due_date_type_code`) against `Facturx.vat_point_date_codes/0`,
+      returning `{:error, {:invalid_vat_point_date_code, code}}`. **Defaults to
+      `true`**, the other way round, because this list is imposed by EN 16931
+      itself (rule BR-CL-06): a value outside it is invalid in CII whatever the
+      jurisdiction.
+
+  Both accept a per-call value or a default from the application environment, the
+  option winning:
+
+      config :facturx, Facturx.CII, validate_business_process: true
+
+  ## Rebuilding third-party documents
+
+  `parse/1` validates nothing, so a document you received may carry codes these
+  checks reject — a BT-8 of `3`/`35`/`432` (the UBL values) is common in
+  UBL→CII conversions. `build/2` on such a struct fails by design; pass
+  `validate_vat_point_date: false` to reproduce it as-is.
+
+  ## Notes
+
+  `nil` and `""` are both treated as absent and emit no element. A
+  `:tax_due_date_type_code` with an empty `:tax_breakdown` has nowhere to go and
+  returns `{:error, {:vat_point_date_unemittable, code}}` rather than being
+  dropped silently.
   """
   @spec build(Invoice.t(), keyword()) :: {:ok, binary()} | {:error, term()}
   def build(invoice, opts \\ [])
@@ -32,21 +67,98 @@ defmodule Facturx.CII do
   def build(%Invoice{} = inv, opts) do
     profile = Keyword.get(opts, :profile, inv.profile || :en16931)
 
-    doc =
-      {"rsm:CrossIndustryInvoice", @ns,
-       [
-         context(profile),
-         document(inv),
-         transaction(inv)
-       ]}
+    with :ok <- check_business_process(inv.business_process, validate_bp?(opts)),
+         :ok <- check_vat_point_dates(inv, flag?(opts, :validate_vat_point_date, true)) do
+      doc =
+        {"rsm:CrossIndustryInvoice", @ns,
+         [
+           context(inv, profile),
+           document(inv),
+           transaction(inv)
+         ]}
 
-    {:ok, ~s(<?xml version="1.0" encoding="UTF-8"?>) <> Saxy.encode!(doc)}
+      {:ok, ~s(<?xml version="1.0" encoding="UTF-8"?>) <> Saxy.encode!(doc)}
+    end
   rescue
     e -> {:error, e}
   end
 
-  defp context(profile) do
+  defp validate_bp?(opts), do: flag?(opts, :validate_business_process, false)
+
+  # Per call, else `config :facturx, Facturx.CII, ...`, else `default`. Read for
+  # truthiness rather than matched literally: these flags are often forwarded from
+  # a caller's own config, where they may well arrive as nil.
+  defp flag?(opts, key, default) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} ->
+        !!value
+
+      :error ->
+        case Keyword.fetch(Application.get_env(:facturx, __MODULE__, []), key) do
+          {:ok, value} -> !!value
+          :error -> default
+        end
+    end
+  end
+
+  # "" is treated as absent throughout: it is never a meaningful code, and
+  # emitting an empty element would lose it on the way back in.
+  defp blank?(value), do: value in [nil, ""]
+
+  defp check_business_process(code, _check?) when code in [nil, ""], do: :ok
+
+  defp check_business_process(code, check?) when is_binary(code) do
+    if not check? or code in Facturx.business_processes() do
+      :ok
+    else
+      {:error, {:invalid_business_process, code}}
+    end
+  end
+
+  defp check_business_process(code, _check?), do: {:error, {:invalid_business_process, code}}
+
+  # BT-8 lives per VAT breakdown entry, so every emitted code is checked — the
+  # document-level one and any per-entry override.
+  defp check_vat_point_dates(inv, check?) do
+    codes = Enum.map(inv.tax_breakdown, &(&1[:due_date_type_code] || inv.tax_due_date_type_code))
+
+    with :ok <- Enum.reduce_while(codes, :ok, &reduce_vat_point_date(&1, &2, check?)) do
+      # A document-level code with no breakdown to carry it would be silently
+      # dropped; say so instead.
+      if not blank?(inv.tax_due_date_type_code) and inv.tax_breakdown == [] do
+        {:error, {:vat_point_date_unemittable, inv.tax_due_date_type_code}}
+      else
+        :ok
+      end
+    end
+  end
+
+  defp reduce_vat_point_date(code, _acc, check?) do
+    case check_vat_point_date(code, check?) do
+      :ok -> {:cont, :ok}
+      error -> {:halt, error}
+    end
+  end
+
+  defp check_vat_point_date(code, _check?) when code in [nil, ""], do: :ok
+
+  defp check_vat_point_date(code, check?) when is_binary(code) do
+    if not check? or code in Facturx.vat_point_date_codes() do
+      :ok
+    else
+      {:error, {:invalid_vat_point_date_code, code}}
+    end
+  end
+
+  defp check_vat_point_date(code, _check?), do: {:error, {:invalid_vat_point_date_code, code}}
+
+  # BusinessProcess (BT-23) must precede Guideline (BT-24) per ExchangedDocumentContextType.
+  defp context(inv, profile) do
     e("rsm:ExchangedDocumentContext", [
+      wrap(
+        "ram:BusinessProcessSpecifiedDocumentContextParameter",
+        t("ram:ID", inv.business_process)
+      ),
       e("ram:GuidelineSpecifiedDocumentContextParameter", [
         t("ram:ID", profile_urn(profile))
       ])
@@ -115,7 +227,7 @@ defmodule Facturx.CII do
     e(
       "ram:ApplicableHeaderTradeSettlement",
       [t("ram:InvoiceCurrencyCode", inv.currency)] ++
-        Enum.map(inv.tax_breakdown, &trade_tax/1) ++
+        Enum.map(inv.tax_breakdown, &trade_tax(&1, inv.tax_due_date_type_code)) ++
         [
           payment_terms(inv.due_date),
           monetary_summation(inv.totals, inv.currency)
@@ -123,12 +235,16 @@ defmodule Facturx.CII do
     )
   end
 
-  defp trade_tax(tax) do
+  # BT-8: the entry's own code wins, else the document-level one (rule S1.13 makes
+  # the latter the norm for French invoices).
+  # Order follows TradeTaxType: ... CategoryCode, DueDateTypeCode, RateApplicablePercent.
+  defp trade_tax(tax, doc_code) do
     e("ram:ApplicableTradeTax", [
       amount("ram:CalculatedAmount", tax[:calculated]),
       t("ram:TypeCode", tax[:type] || "VAT"),
       amount("ram:BasisAmount", tax[:basis]),
       t("ram:CategoryCode", tax[:category]),
+      t("ram:DueDateTypeCode", tax[:due_date_type_code] || doc_code),
       t("ram:RateApplicablePercent", decimal(tax[:rate]))
     ])
   end
@@ -202,7 +318,7 @@ defmodule Facturx.CII do
 
   defp e(name, children), do: {name, [], compact(children)}
 
-  defp t(_name, nil), do: nil
+  defp t(_name, value) when value in [nil, ""], do: nil
   defp t(name, value), do: {name, [], [to_string(value)]}
 
   defp id_el(nil, _scheme), do: nil
@@ -261,6 +377,12 @@ defmodule Facturx.CII do
             "ram:ID"
           ])
         ),
+      business_process:
+        path_text(root, [
+          "rsm:ExchangedDocumentContext",
+          "ram:BusinessProcessSpecifiedDocumentContextParameter",
+          "ram:ID"
+        ]),
       number: path_text(root, ["rsm:ExchangedDocument", "ram:ID"]),
       type_code: path_text(root, ["rsm:ExchangedDocument", "ram:TypeCode"]) || "380",
       issue_date:
@@ -288,9 +410,32 @@ defmodule Facturx.CII do
       buyer: parse_party(find(agreement, "ram:BuyerTradeParty")),
       ship_to: parse_party(find(delivery, "ram:ShipToTradeParty")),
       lines: tx |> find_all("ram:IncludedSupplyChainTradeLineItem") |> Enum.map(&parse_line/1),
-      tax_breakdown: settlement |> find_all("ram:ApplicableTradeTax") |> Enum.map(&parse_tax/1),
       totals: parse_totals(summation)
     }
+    |> put_tax_breakdown(settlement)
+  end
+
+  # BT-8 is per entry on the wire but usually uniform (rule S1.13). Hoist it to the
+  # document level only when every entry agrees; otherwise keep it per entry rather
+  # than collapsing distinct VAT point dates onto one value.
+  defp put_tax_breakdown(%Invoice{} = inv, settlement) do
+    entries = settlement |> find_all("ram:ApplicableTradeTax") |> Enum.map(&parse_tax/1)
+    codes = Enum.map(entries, & &1[:due_date_type_code])
+
+    case Enum.uniq(codes) do
+      [] ->
+        %{inv | tax_breakdown: []}
+
+      [single] ->
+        %{
+          inv
+          | tax_breakdown: Enum.map(entries, &Map.delete(&1, :due_date_type_code)),
+            tax_due_date_type_code: single
+        }
+
+      _divergent ->
+        %{inv | tax_breakdown: entries, tax_due_date_type_code: nil}
+    end
   end
 
   defp parse_line(li) do
@@ -329,7 +474,8 @@ defmodule Facturx.CII do
       category: child_text(tt, "ram:CategoryCode"),
       rate: num(child_text(tt, "ram:RateApplicablePercent")),
       basis: num(child_text(tt, "ram:BasisAmount")),
-      calculated: num(child_text(tt, "ram:CalculatedAmount"))
+      calculated: num(child_text(tt, "ram:CalculatedAmount")),
+      due_date_type_code: child_text(tt, "ram:DueDateTypeCode")
     })
   end
 

@@ -26,6 +26,10 @@ defmodule Facturx.CIITest do
         contact: %{name: "Jean Client", email: "jean@example.com", phone: "0102030405"}
       },
       delivery_date: ~D[2026-07-24],
+      # French mandate: BT-23 (services) and BT-8 ("5" = date of invoice,
+      # i.e. VAT on debits). BT-8 values are restricted to 5/29/72 by BR-CL-06.
+      business_process: "S1",
+      tax_due_date_type_code: "5",
       lines: [
         %{
           id: "1",
@@ -74,6 +78,277 @@ defmodule Facturx.CIITest do
     test "honours the :profile option" do
       {:ok, xml} = Facturx.build(sample_invoice(), profile: :basic)
       assert xml =~ "urn:factur-x.eu:1p0:basic"
+    end
+
+    test "output validates against the bundled EN 16931 XSD" do
+      {:ok, xml} = Facturx.build(sample_invoice())
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+    end
+  end
+
+  # BT-23 (cadre de facturation) and BT-8 (option TVA sur les débits) — the two
+  # data items the French mandate requires. See docs/reference/reforme-fr.md.
+  describe "French mandate fields" do
+    test "BT-23 is emitted before BT-24, as the CII sequence requires" do
+      {:ok, xml} = Facturx.build(sample_invoice())
+
+      assert xml =~
+               "<ram:BusinessProcessSpecifiedDocumentContextParameter><ram:ID>S1</ram:ID>"
+
+      business = :binary.match(xml, "BusinessProcessSpecifiedDocumentContextParameter")
+      guideline = :binary.match(xml, "GuidelineSpecifiedDocumentContextParameter")
+      assert elem(business, 0) < elem(guideline, 0)
+    end
+
+    test "BT-8 goes into the VAT breakdown, between CategoryCode and the rate" do
+      {:ok, xml} = Facturx.build(sample_invoice())
+
+      assert xml =~
+               "<ram:CategoryCode>S</ram:CategoryCode>" <>
+                 "<ram:DueDateTypeCode>5</ram:DueDateTypeCode>" <>
+                 "<ram:RateApplicablePercent>20.00</ram:RateApplicablePercent>"
+    end
+
+    test "BT-8 repeats on every VAT breakdown entry (rule S1.13)" do
+      inv = %{
+        sample_invoice()
+        | tax_breakdown: [
+            %{type: "VAT", category: "S", rate: Decimal.new("20.00")},
+            %{type: "VAT", category: "S", rate: Decimal.new("5.50")}
+          ]
+      }
+
+      {:ok, xml} = Facturx.build(inv)
+
+      assert length(String.split(xml, "<ram:DueDateTypeCode>5</ram:DueDateTypeCode>")) - 1 == 2
+    end
+
+    test "both fields survive a build/parse round-trip" do
+      {:ok, xml} = Facturx.build(sample_invoice())
+      {:ok, parsed} = Facturx.parse(xml)
+
+      assert parsed.business_process == "S1"
+      assert parsed.tax_due_date_type_code == "5"
+    end
+
+    test "omitting them emits nothing (unchanged for cross-border use)" do
+      inv = %{sample_invoice() | business_process: nil, tax_due_date_type_code: nil}
+      {:ok, xml} = Facturx.build(inv)
+
+      refute xml =~ "BusinessProcessSpecifiedDocumentContextParameter"
+      refute xml =~ "DueDateTypeCode"
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "every BT-23 code of rule G1.02 builds and validates" do
+      for code <- Facturx.business_processes() do
+        {:ok, xml} =
+          Facturx.build(%{sample_invoice() | business_process: code},
+            validate_business_process: true
+          )
+
+        assert {:ok, :valid} = Facturx.validate_xsd(xml), "profile code #{code} failed XSD"
+        assert xml =~ "<ram:ID>#{code}</ram:ID>"
+      end
+    end
+
+    test "an unknown BT-23 code is rejected when validation is enabled" do
+      assert {:error, {:invalid_business_process, "X9"}} =
+               Facturx.build(%{sample_invoice() | business_process: "X9"},
+                 validate_business_process: true
+               )
+
+      assert {:error, {:invalid_business_process, :b1}} =
+               Facturx.build(%{sample_invoice() | business_process: :b1},
+                 validate_business_process: true
+               )
+    end
+
+    test "a non-binary BT-23 is rejected even with validation off" do
+      assert {:error, {:invalid_business_process, :b1}} =
+               Facturx.build(%{sample_invoice() | business_process: :b1})
+    end
+  end
+
+  # BT-23 is an EN 16931 business term, not a French one: the French closed list
+  # is opt-in so it cannot lock out Peppol / Chorus Pro / other national values.
+  describe "non-French use of BT-23" do
+    @peppol "urn:fdc:peppol.eu:2017:poacc:billing:01:1.0"
+
+    test "a foreign code is emitted as-is by default" do
+      inv = %{sample_invoice() | business_process: @peppol}
+
+      assert {:ok, xml} = Facturx.build(inv)
+      assert xml =~ "<ram:ID>#{@peppol}</ram:ID>"
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "a parsed foreign document rebuilds with no special option" do
+      {:ok, xml} = Facturx.build(%{sample_invoice() | business_process: @peppol})
+
+      {:ok, parsed} = Facturx.parse(xml)
+      assert parsed.business_process == @peppol
+      assert {:ok, _} = Facturx.build(parsed)
+    end
+
+    test "opting in rejects the same foreign code" do
+      assert {:error, {:invalid_business_process, @peppol}} =
+               Facturx.build(%{sample_invoice() | business_process: @peppol},
+                 validate_business_process: true
+               )
+    end
+
+    test "the flag is read for truthiness, not matched literally" do
+      inv = %{sample_invoice() | business_process: @peppol}
+
+      # A forwarded `opts[:strict]` arriving as nil must mean "off", not crash or
+      # accidentally enable the check.
+      assert {:ok, _} = Facturx.build(inv, validate_business_process: nil)
+
+      assert {:error, {:invalid_business_process, @peppol}} =
+               Facturx.build(inv, validate_business_process: :yes)
+    end
+  end
+
+  # BT-8's code list is imposed by EN 16931 (BR-CL-06), not by France: the
+  # bundled Schematron restricts ram:DueDateTypeCode to code list id=28.
+  describe "BT-8 code list" do
+    test "the three standard codes are accepted" do
+      assert Facturx.vat_point_date_codes() == ~w(5 29 72)
+
+      for code <- Facturx.vat_point_date_codes() do
+        inv = %{sample_invoice() | tax_due_date_type_code: code}
+        assert {:ok, xml} = Facturx.build(inv)
+        assert xml =~ "<ram:DueDateTypeCode>#{code}</ram:DueDateTypeCode>"
+        assert {:ok, :valid} = Facturx.validate_xsd(xml)
+        assert {:ok, ^inv} = Facturx.parse(xml)
+      end
+    end
+
+    test "a code outside the list is rejected, even though the XSD would accept it" do
+      # "3"/"35"/"432" belong to UNTDID 2005 (UBL), not 2475 (CII) — a classic mix-up.
+      for bad <- ["3", "35", "432", "1", "AA"] do
+        assert {:error, {:invalid_vat_point_date_code, ^bad}} =
+                 Facturx.build(%{sample_invoice() | tax_due_date_type_code: bad})
+      end
+    end
+
+    test "BT-8 validation is not affected by validate_business_process: false" do
+      assert {:error, {:invalid_vat_point_date_code, "3"}} =
+               Facturx.build(%{sample_invoice() | tax_due_date_type_code: "3"},
+                 validate_business_process: false
+               )
+    end
+
+    test "a nonconformant third-party code can be rebuilt with the opt-out" do
+      inv = %{sample_invoice() | tax_due_date_type_code: "35"}
+
+      assert {:error, {:invalid_vat_point_date_code, "35"}} = Facturx.build(inv)
+
+      assert {:ok, xml} = Facturx.build(inv, validate_vat_point_date: false)
+      assert xml =~ "<ram:DueDateTypeCode>35</ram:DueDateTypeCode>"
+      assert {:ok, ^inv} = Facturx.parse(xml)
+    end
+
+    test "a document-level code with no VAT breakdown is refused, not dropped" do
+      inv = %{sample_invoice() | tax_breakdown: [], tax_due_date_type_code: "5"}
+
+      assert {:error, {:vat_point_date_unemittable, "5"}} = Facturx.build(inv)
+    end
+
+    test "a per-entry code is validated too" do
+      inv = %{
+        sample_invoice()
+        | tax_due_date_type_code: nil,
+          tax_breakdown: [%{type: "VAT", category: "S", due_date_type_code: "3"}]
+      }
+
+      assert {:error, {:invalid_vat_point_date_code, "3"}} = Facturx.build(inv)
+    end
+  end
+
+  # EN 16931 allows BT-8 to differ per VAT breakdown entry (French rule S1.13 does
+  # not). Collapsing divergent codes onto one value would silently misstate when
+  # VAT becomes chargeable, so they are preserved per entry.
+  describe "per-entry BT-8" do
+    defp two_rates(code_a, code_b) do
+      %{
+        sample_invoice()
+        | tax_due_date_type_code: nil,
+          tax_breakdown: [
+            %{type: "VAT", category: "S", rate: Decimal.new("20.00"), due_date_type_code: code_a},
+            %{type: "VAT", category: "S", rate: Decimal.new("5.50"), due_date_type_code: code_b}
+          ]
+      }
+    end
+
+    test "divergent codes survive a round-trip instead of being unified" do
+      inv = two_rates("29", "72")
+      {:ok, xml} = Facturx.build(inv)
+
+      assert xml =~ "<ram:DueDateTypeCode>29</ram:DueDateTypeCode>"
+      assert xml =~ "<ram:DueDateTypeCode>72</ram:DueDateTypeCode>"
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
+
+      assert {:ok, parsed} = Facturx.parse(xml)
+      assert Enum.map(parsed.tax_breakdown, & &1[:due_date_type_code]) == ["29", "72"]
+      # not hoisted, since the entries disagree
+      assert parsed.tax_due_date_type_code == nil
+      assert parsed == inv
+
+      # and rebuilding does not flatten them
+      {:ok, again} = Facturx.build(parsed)
+      assert again == xml
+    end
+
+    test "uniform codes are hoisted to the document level (S1.13 shape)" do
+      {:ok, xml} = Facturx.build(two_rates("5", "5"))
+      {:ok, parsed} = Facturx.parse(xml)
+
+      assert parsed.tax_due_date_type_code == "5"
+      assert Enum.all?(parsed.tax_breakdown, &(not Map.has_key?(&1, :due_date_type_code)))
+    end
+
+    test "a per-entry code overrides the document-level one" do
+      inv = %{
+        sample_invoice()
+        | tax_due_date_type_code: "5",
+          tax_breakdown: [
+            %{type: "VAT", category: "S", rate: Decimal.new("20.00")},
+            %{type: "VAT", category: "S", rate: Decimal.new("5.50"), due_date_type_code: "72"}
+          ]
+      }
+
+      {:ok, xml} = Facturx.build(inv)
+
+      codes =
+        Regex.scan(~r|<ram:DueDateTypeCode>(\d+)</ram:DueDateTypeCode>|, xml,
+          capture: :all_but_first
+        )
+
+      assert List.flatten(codes) == ["5", "72"]
+    end
+  end
+
+  # "" is a plausible value from a form field or a NOT NULL DEFAULT '' column.
+  describe "empty-string codes are treated as absent" do
+    test "an empty BT-23 emits no element and round-trips" do
+      inv = %{sample_invoice() | business_process: ""}
+
+      assert {:ok, xml} = Facturx.build(inv, validate_business_process: true)
+      refute xml =~ "BusinessProcessSpecifiedDocumentContextParameter"
+      assert {:ok, parsed} = Facturx.parse(xml)
+      assert parsed.business_process == nil
+    end
+
+    test "an empty BT-8 emits no element" do
+      inv = %{sample_invoice() | tax_due_date_type_code: ""}
+
+      assert {:ok, xml} = Facturx.build(inv)
+      refute xml =~ "DueDateTypeCode"
+      assert {:ok, :valid} = Facturx.validate_xsd(xml)
     end
   end
 
@@ -134,7 +409,8 @@ defmodule Facturx.CIITest do
       assert Decimal.equal?(inv.totals.grand_total, inv.totals.due_payable)
       assert is_map(inv.seller) and is_map(inv.buyer)
 
-      # build -> parse is stable on real data too
+      # build -> parse is stable on real data too. Third-party documents may carry
+      # any BT-23 value, which the default (validation off) accommodates.
       {:ok, xml} = Facturx.build(inv)
       assert {:ok, ^inv} = Facturx.parse(xml)
     end
