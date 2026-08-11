@@ -25,7 +25,11 @@
 #
 # Note: the upstream image is amd64-only, so this runs emulated on arm64 hosts
 # (a validation then takes on the order of a minute).
-FROM ghcr.io/willemvlh/saxon-server
+# Pinned by digest, not by :latest. On 2026-08-11 the upstream tag moved to a
+# build that answers 400 to every /transform request, turning all 15 schematron
+# tests red on a change that had nothing to do with them. A validation image has
+# to be reproducible or it is not evidence of anything.
+FROM ghcr.io/willemvlh/saxon-server@sha256:c0959035f4a659584e8a846132cd34d8618bea63990ad0099f42ff6957cd108b
 
 # Third-party artefacts — see priv/NOTICE.md at the repository root. Carried into
 # the image because BSD-3-Clause requires the licence text to travel with a
