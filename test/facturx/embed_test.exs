@@ -99,12 +99,15 @@ defmodule Facturx.EmbedTest do
     end
   end
 
+  # Tagged, not guarded by File.exists?: an `if` around the only assertion makes
+  # the test report green everywhere the fixture is missing. The contract itself
+  # is covered synthetically in Facturx.PdfRoundtripTest; this pins it against a
+  # real producer's output.
+  @tag :local
   test "rejects a non-PDF/A input" do
     plain = Path.expand("../fixtures/local/plain-typst.pdf", __DIR__)
 
-    if File.exists?(plain) do
-      assert Facturx.generate(File.read!(plain), "<xml/>") == {:error, :not_pdfa}
-    end
+    assert Facturx.generate(File.read!(plain), "<xml/>") == {:error, :not_pdfa}
   end
 
   test "rejects an unsupported PDF/A-1 base" do

@@ -11,8 +11,13 @@ defmodule Facturx.XSD do
   (~5 ms) inside a short-lived task, so the schema's ETS table is reclaimed on
   exit.
 
-  Only the `:en16931` profile schema ships today (`priv/xsd/en16931/`); other
-  profiles return `{:error, {:xsd_not_bundled, profile}}`.
+  Two profile schemas ship: `:en16931` (`priv/xsd/en16931/`) and `:extended`
+  (`priv/xsd/extended/`), the latter being what accepts the line-level French
+  extensions `EXT-FR-FE-*`. Other profiles return
+  `{:error, {:xsd_not_bundled, profile}}`.
+
+  The matching schematrons ship for both, so an EXTENDED document can be checked
+  against its business rules too — see `Facturx.Validate`.
 
   ## Security
 
@@ -29,7 +34,10 @@ defmodule Facturx.XSD do
   """
 
   # profile => bundled root schema (relative to priv/xsd/)
-  @schemas %{en16931: "en16931/Factur-X_EN16931.xsd"}
+  @schemas %{
+    en16931: "en16931/Factur-X_EN16931.xsd",
+    extended: "extended/Factur-X_EXTENDED.xsd"
+  }
 
   @typedoc "An XSD validation error — the raw `:xmerl_xsd` reason, inspected."
   @type error :: String.t()

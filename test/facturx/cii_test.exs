@@ -608,7 +608,7 @@ defmodule Facturx.CIITest do
               vat_category: "S",
               vat_rate: d.("20.00"),
               line_total: d.("200.00"),
-              note: "Livré en 2 colis"
+              notes: [%{content: "Livré en 2 colis"}]
             }
           ],
           totals: %{
@@ -664,10 +664,14 @@ defmodule Facturx.CIITest do
     end
 
     # EN 16931 does not allow ram:SubjectCode on a line note — that is
-    # EXT-FR-FE-183, a French extension. Emitting one gets the invoice rejected, so
-    # :note is a plain string with no way to ask for it.
+    # EXT-FR-FE-183, a French extension. Emitting one gets the invoice rejected,
+    # so the profile drops it even when the caller supplies one, as here.
     test "the line note carries content only, no subject code" do
-      {:ok, xml} = Facturx.build(complete_invoice())
+      inv = complete_invoice()
+      [line] = inv.lines
+      asked = %{line | notes: [%{content: "Livré en 2 colis", subject_code: "AAI"}]}
+
+      {:ok, xml} = Facturx.build(%{inv | lines: [asked]})
 
       assert xml =~
                "<ram:IncludedNote><ram:Content>Livré en 2 colis</ram:Content></ram:IncludedNote>"

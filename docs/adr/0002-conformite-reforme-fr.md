@@ -159,20 +159,30 @@ défaut mais reste désactivable.
   éléments respecte les séquences du schéma. Une référence verte a été relevée
   sur `main` avant modification, afin qu'un échec ultérieur soit imputable.
 
-### État du socle (mis à jour le 2026-07-30)
+### État du socle (mis à jour le 2026-08-11)
 
-**96 / 116 données réglementaires émises** — le socle est couvert dans les limites
-du profil EN 16931. Détail en [Annexe B](../reference/mapping-cii-flux1.md).
+**116 / 116 données réglementaires émises**. Détail en
+[Annexe B](../reference/mapping-cii-flux1.md).
 
-Les 20 restantes ne sont pas atteignables avec le schéma embarqué : 19 sont des
-extensions `EXT-FR-FE-*` (toutes de niveau ligne, toutes en trajectoire CIBLE), et
-la dernière est `BT-127-00`, le conteneur de note de ligne en `0..n` là où
-l'EN 16931 en autorise une seule.
+Le socle est couvert **au-delà du seul profil EN 16931** depuis que le XSD et le
+schematron **EXTENDED** sont embarqués (`priv/xsd/extended/`,
+`priv/schematron/extended/`) : `BT-127-00` et `EXT-FR-FE-183` — la note de ligne
+répétée et son code sujet — sont émis, mais **uniquement en profil `:extended`**.
+En EN 16931, `Facturx.CII.build/2` ne garde qu'une note et retire le code sujet,
+plutôt que de produire un document que le schéma ferait rejeter.
 
-Aller plus loin suppose donc d'embarquer les XSD `F1_FULL` du PPF et de valider
-contre eux — décision distincte, à prendre si la trajectoire CIBLE devient
-contraignante. À peser contre le poids de `priv/`, déjà ~90 % du paquet Hex, et
-contre les conditions de redistribution de ces artefacts.
+Il n'en reste aucune. Les 19 extensions `EXT-FR-FE-*` — note de ligne et son code
+sujet, référence à une facture antérieure en ligne, adresse et date de livraison
+à la ligne — sont émises, ainsi que `BT-127-00`.
+
+**Condition à ne pas perdre de vue** : ces 20 données n'existent qu'en profil
+`:extended`. En EN 16931, `Facturx.CII.build/2` les laisse tomber délibérément
+plutôt que de produire un document hors profil, que le XSD comme la plateforme
+rejetteraient. La couverture est donc 116/116 sur la trajectoire CIBLE, 96/116
+sur le profil EN 16931 nu.
+
+Les XSD `F1_BASE` / `F1_FULL` du PPF restent une cible de validation
+*supplémentaire* possible, décision distincte de celle-ci.
 
 Hors socle réglementaire, `BG-16` (moyens de paiement) est fait : l'administration
 n'en a pas besoin, le client si.

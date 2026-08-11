@@ -3,6 +3,117 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.0] - 2026-08-11
+
+Full coverage of the French regulatory Flux 1 data set — **96/116 → 116/116** —
+and the first breaking change since 0.1.0. Read the note on `:notes` below
+before upgrading.
+
+### Changed — breaking
+- **A line's `:note` becomes `:notes`, a list**, taking the same
+  `%{content: …, subject_code: …}` shape as the document-level field. Callers
+  passing `note: "…"` must pass `notes: [%{content: "…"}]`.
+
+  What the profile allows is no longer the caller's problem:
+
+    * `:en16931` — one note, content only. Extra notes and any `:subject_code`
+      are dropped, because emitting them gets the document rejected.
+    * `:extended` — as many notes as you like, each free to carry a subject code.
+
+  That covers **BT-127-00** (the repeated container) and **EXT-FR-FE-183** (the
+  subject code), the first two of the twenty items annexe B still listed as not
+  emitted.
+
+  Note the consequence for round-tripping: an EN 16931 document cannot return
+  what a caller supplied if that caller supplied more than the profile carries.
+
+### Added
+- **A line may carry its own delivery address and date** — `:ship_to` and
+  `:delivery_date` on a line (`EXT-FR-FE-BG-10` and `EXT-FR-FE-BG-11` with their
+  children), for the multi-delivery case where one line ships elsewhere, or on
+  another date, than the document says. Same shapes as their document-level
+  counterparts, both `0..1`, both `:extended` only.
+
+  With these, **annexe B reaches 116/116** — every regulatory Flux 1 data item is
+  emitted. Note the condition: 20 of them (the 19 `EXT-FR-FE-*` plus
+  `BT-127-00`) exist **only in `:extended`**. `Facturx.build(inv)` still emits
+  96/116 and drops the rest on purpose, rather than produce a document the schema
+  and the platform would reject.
+
+- **A line may reference a preceding invoice** — `:preceding_invoice` on a line
+  (`EXT-FR-FE-BG-06` / `-136` / `-138`), what a line points at to net off a down
+  payment invoiced earlier. Singular, not a list: the CII element is `0..1` at
+  line level (`minOccurs="0"`, no `maxOccurs`), unlike the document-level
+  `:preceding_invoices`.
+
+  Emitted in `:extended` only, being a French extension. Two things the compiler
+  will not tell you: `LineTradeSettlementType` puts it **after** the line
+  monetary summation, and its date is a `qdt:DateTimeString` — the `qdt`
+  namespace, not the `udt` every other date in the document uses.
+
+
+- **The EXTENDED profile XSD is bundled** (`priv/xsd/extended/`), so
+  `Facturx.validate_xsd/2` now accepts an EXTENDED document instead of answering
+  `{:error, {:xsd_not_bundled, :extended}}`. The schema is picked from the
+  document's own guideline URN, so no option is needed. This is the groundwork
+  for the line-level French extensions `EXT-FR-FE-*`, which the EN 16931 schema
+  rejects as out of profile.
+
+- **The EXTENDED schematron is bundled too** (`priv/schematron/extended/`), so
+  `Facturx.validate/2` checks an EXTENDED document's business rules the way it
+  already did for EN 16931 — the step that catches what no XSD can see. The
+  Docker image carries the matching code-list DB.
+
+  Cost of both, measured on the published artifact rather than on disk: the Hex
+  package goes from **125 KB to 209 KB**. XSLT compresses well, so the 2.2 MB
+  those files occupy unpacked is not what users download.
+
+### Fixed
+- **Streams whose data ends on CR or LF were truncated by one byte.** Both
+  `Facturx.Embed` and `Facturx.Extract` used to guess where a stream stopped, by
+  removing the end-of-line that precedes `endstream`. When the data itself ended
+  with `\r` or `\n` that guess ate a real byte. For a deflate stream the last
+  byte is the low byte of the adler32, so it hit roughly **one document in
+  256**: `Facturx.extract/1` returned `{:error, :inflate_failed}` on a file it
+  had just produced, and a base whose `/Metadata` was deflated and ended the
+  same way made `Facturx.generate/3` fail outright.
+
+  Both now take `/Length` when it is a direct integer *and* lands on
+  `endstream` with nothing but an end-of-line in between, falling back to the
+  scan otherwise — producers do get `/Length` wrong, and trusting a wrong one
+  would truncate where the scan worked.
+
+### Changed
+- **The PDF paths are now exercised by CI.** `Facturx.Embed` and
+  `Facturx.Extract` were only ever tested against private fixtures under
+  `test/fixtures/local/`, which are not committed — so every run outside the
+  author's machine skipped them silently. A new test-only builder
+  (`test/support/pdf_builder.ex`) assembles a minimal PDF/A base in the test
+  process, and 22 tests now cover the round-trip, the XMP promotion, the catalog
+  merge branches (`/Names`, `/AF`, `/PageMode`, and the shapes that are refused
+  rather than corrupted), the input contract, the cross-reference offsets and
+  `/Prev` chain of the incremental update, and the truncation bug above.
+
+  The synthetic base is a structural fixture, not a PDF/A producer: real
+  conformance is still proven only by the `:local` tests, which run veraPDF over
+  real producer output.
+
+- **The coverage count is now verified rather than declared.** The "Émis"
+  column of annexe B (`docs/reference/mapping-cii-flux1.md`) is written by hand,
+  and the count derived from it appears in the README, both ADRs and this file;
+  the annexe itself records a past drift on BT-111. `Facturx.MappingAnnexeTest`
+  reads the table and evaluates each of the 116 CII paths against the document
+  `Facturx.CII.build/2` produces from `Facturx.TestInvoice.maximal/0`. The
+  maximal invoice is also asserted XSD-valid and to round-trip exactly, which is
+  what makes it a fair witness.
+
+  What is checked is the **occurrence count**, not mere existence: nine paths are
+  claimed by two rows each — BT-110 and BT-111 are both `ram:TaxTotalAmount`,
+  told apart only by their `currencyID`, and the four allowance/charge families
+  only by their `ChargeIndicator`. Existence alone would let one of each pair
+  vanish unnoticed. A path carrying fewer nodes than it has ticked rows, or a
+  path with no ticked row carrying any, fails the suite.
+
 ## [0.5.0] - 2026-07-30
 
 The French regulatory core, complete within the EN 16931 profile: **50/116 → 96/116**

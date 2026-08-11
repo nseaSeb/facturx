@@ -278,10 +278,32 @@ defmodule Facturx.Embed do
          data_start = skip_eol(pdf, s + 6),
          {e, _} <-
            :binary.match(pdf, "endstream", scope: {data_start, byte_size(pdf) - data_start}) do
-      raw = binary_part(pdf, data_start, strip_eol(pdf, data_start, e) - data_start)
+      raw = stream_data(pdf, dict, data_start, e)
       if String.contains?(dict, "/FlateDecode"), do: inflate(raw), else: {:ok, raw}
     else
       _ -> {:error, {:no_stream, num}}
+    end
+  end
+
+  # Prefer `/Length`, which is where the stream actually stops. Guessing instead
+  # at the EOL that precedes `endstream` eats a real byte as soon as the data
+  # itself ends with CR or LF — for a deflated `/Metadata` that is roughly one
+  # base in 256, and the embedding then fails outright on `:inflate_failed`.
+  #
+  # A `/Length` is only taken once it lands on `endstream` with nothing but an
+  # EOL in between: producers do get it wrong, and a wrong length would silently
+  # truncate where the scan would have worked.
+  defp stream_data(pdf, dict, data_start, e) do
+    # The `\b` matters: without it the engine backtracks into the digits when
+    # the lookahead fires, so `/Length 120 0 R` captures "12" instead of failing.
+    with [_, n] <- Regex.run(~r{/Length\s+(\d+)\b(?!\s*\d+\s+R)}, dict),
+         len = String.to_integer(n),
+         true <- len <= e - data_start,
+         true <-
+           binary_part(pdf, data_start + len, e - data_start - len) in ["", "\n", "\r\n", "\r"] do
+      binary_part(pdf, data_start, len)
+    else
+      _ -> binary_part(pdf, data_start, strip_eol(pdf, data_start, e) - data_start)
     end
   end
 
