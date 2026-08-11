@@ -8,7 +8,9 @@ without downloading anything at runtime.
 | Path | Files | Upstream |
 |---|---|---|
 | `priv/xsd/en16931/` | `Factur-X_EN16931.xsd` + 3 imported UN/CEFACT schemas | Factur-X / EN 16931 standard, as packaged by [`akretion/factur-x`](https://github.com/akretion/factur-x) |
+| `priv/xsd/extended/` | `Factur-X_EXTENDED.xsd` + 3 imported UN/CEFACT schemas | idem, EXTENDED profile |
 | `priv/schematron/en16931/` | `Factur-X_1.09_EN16931.xsl`, `FACTUR-X_EN16931_codedb.xml` | idem |
+| `priv/schematron/extended/` | `Factur-X_1.09_EXTENDED.xsl`, `FACTUR-X_EXTENDED_codedb.xml` | idem, EXTENDED profile |
 
 Both sets originate from the Factur-X standard published by **FNFE-MPE**, whose
 CII schemas are themselves derived from **UN/CEFACT** work.

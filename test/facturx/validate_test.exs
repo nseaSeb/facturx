@@ -91,8 +91,10 @@ defmodule Facturx.ValidateTest do
 
   describe "validate/2 without a network call" do
     test "refuses a profile whose schematron is not bundled" do
-      assert Facturx.validate("<xml/>", profile: :extended) ==
-               {:error, {:schematron_not_bundled, :extended}}
+      # :basic, not :extended — the latter is bundled since the EXTENDED rule set
+      # was added, and asking for it here would reach for a Saxon server.
+      assert Facturx.validate("<xml/>", profile: :basic) ==
+               {:error, {:schematron_not_bundled, :basic}}
     end
   end
 

@@ -1,7 +1,7 @@
 defmodule Facturx.MixProject do
   use Mix.Project
 
-  @version "0.5.0"
+  @version "0.6.0"
   @source_url "https://github.com/nseaSeb/facturx"
 
   def project do
@@ -9,6 +9,7 @@ defmodule Facturx.MixProject do
       app: :facturx,
       version: @version,
       elixir: "~> 1.15",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       description: description(),
@@ -18,6 +19,12 @@ defmodule Facturx.MixProject do
       source_url: @source_url
     ]
   end
+
+  # test/support holds Facturx.TestPDF, which builds synthetic PDF/A bases so the
+  # Embed / Extract paths run in CI without the private fixtures. package/0 does
+  # not ship test/, so nothing of it reaches Hex.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   def application do
     [

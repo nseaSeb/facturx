@@ -36,7 +36,7 @@ defmodule Facturx.Validate do
       {:ok, :valid} = Facturx.validate(xml, profile: :en16931,
                                        endpoint: "http://localhost:5000/transform")
 
-  Only the `:en16931` schematron ships today; other profiles return
+  The `:en16931` and `:extended` schematrons ship; other profiles return
   `{:error, {:schematron_not_bundled, profile}}`.
   """
 
@@ -47,7 +47,10 @@ defmodule Facturx.Validate do
   @schematron %{
     en16931:
       {"en16931/Factur-X_1.09_EN16931.xsl", "FACTUR-X_EN16931_codedb.xml",
-       "https://raw.githubusercontent.com/akretion/factur-x/refs/heads/master/src/facturx/xsd_and_schematron/facturx-en16931/FACTUR-X_EN16931_codedb.xml"}
+       "https://raw.githubusercontent.com/akretion/factur-x/refs/heads/master/src/facturx/xsd_and_schematron/facturx-en16931/FACTUR-X_EN16931_codedb.xml"},
+    extended:
+      {"extended/Factur-X_1.09_EXTENDED.xsl", "FACTUR-X_EXTENDED_codedb.xml",
+       "https://raw.githubusercontent.com/akretion/factur-x/refs/heads/master/src/facturx/xsd_and_schematron/facturx-extended/FACTUR-X_EXTENDED_codedb.xml"}
   }
 
   @typedoc """

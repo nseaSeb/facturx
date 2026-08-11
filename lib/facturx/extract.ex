@@ -144,10 +144,32 @@ defmodule Facturx.Extract do
          data_start = skip_eol(obj, s + 6),
          {e, _} <-
            :binary.match(obj, "endstream", scope: {data_start, byte_size(obj) - data_start}) do
-      raw = binary_part(obj, data_start, strip_trailing_eol(obj, data_start, e) - data_start)
-      {:ok, raw}
+      {:ok, stream_data(obj, binary_part(obj, 0, s), data_start, e)}
     else
       _ -> {:error, :no_stream}
+    end
+  end
+
+  # Prefer `/Length`, which is where the stream actually stops. Guessing instead
+  # at the EOL that precedes `endstream` eats a real byte as soon as the data
+  # itself ends with CR or LF — for a deflate stream that is roughly one
+  # document in 256, the last byte being the low byte of the adler32, and what
+  # comes out no longer inflates.
+  #
+  # A `/Length` is only taken once it lands on `endstream` with nothing but an
+  # EOL in between: producers do get it wrong, and a wrong length would silently
+  # truncate where the scan would have worked.
+  defp stream_data(obj, dict, data_start, e) do
+    # The `\b` matters: without it the engine backtracks into the digits when
+    # the lookahead fires, so `/Length 120 0 R` captures "12" instead of failing.
+    with [_, n] <- Regex.run(~r{/Length\s+(\d+)\b(?!\s*\d+\s+R)}, dict),
+         len = String.to_integer(n),
+         true <- len <= e - data_start,
+         true <-
+           binary_part(obj, data_start + len, e - data_start - len) in ["", "\n", "\r\n", "\r"] do
+      binary_part(obj, data_start, len)
+    else
+      _ -> binary_part(obj, data_start, strip_trailing_eol(obj, data_start, e) - data_start)
     end
   end
 

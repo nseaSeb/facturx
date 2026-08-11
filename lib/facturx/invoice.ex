@@ -78,11 +78,30 @@ defmodule Facturx.Invoice do
   but note that rule only fires on DE-to-DE invoices and its assertion is a
   conjunction: a line period alone does not satisfy it.
 
-  `:note` is BT-127, a plain string. Two differences from the document-level
-  `:notes`: CII allows only **one** per line, and the EN 16931 profile does **not**
-  allow a subject code there — that is `EXT-FR-FE-183`, a French extension on the
-  target trajectory. Emitting one makes the schematron reject the invoice, so there
-  is no field for it.
+  `:notes` is BT-127, taking the same `t:note/0` shape as the document-level
+  field. What you may put in it depends on the profile, and `Facturx.CII.build/2`
+  enforces that rather than trusting the caller:
+
+    * `:en16931` — **one** note, content only. The profile caps `IncludedNote` at
+      a single occurrence and has no room for a subject code there, so extra
+      notes and any `:subject_code` are dropped.
+    * `:extended` — as many notes as you like, each free to carry a
+      `:subject_code`. That code is `EXT-FR-FE-183` (BT-127-00 for the repeated
+      container), a French extension on the target trajectory.
+
+  Emitting either of those in an EN 16931 document gets it rejected, which is why
+  the profile decides and not the field.
+
+  `:preceding_invoice` is `EXT-FR-FE-BG-06`, the same `t:preceding_invoice/0`
+  shape as the document-level list but **singular**: the CII element is `0..1`
+  here (`minOccurs="0"`, no `maxOccurs`). It is what a line points at to net off
+  a down payment invoiced earlier, and like the subject code above it only
+  emits in `:extended`.
+
+  `:ship_to` and `:delivery_date` are the same, for a line delivered elsewhere or
+  on another date than the document says — `EXT-FR-FE-BG-10` and
+  `EXT-FR-FE-BG-11`. Same shapes as their document-level counterparts, both
+  `0..1`, both `:extended` only. Multi-delivery is what they exist for.
   """
   @type line :: %{
           optional(:id) => String.t(),
@@ -98,7 +117,10 @@ defmodule Facturx.Invoice do
           optional(:allowances) => [allowance_charge()],
           optional(:charges) => [allowance_charge()],
           optional(:billing_period) => period(),
-          optional(:note) => String.t()
+          optional(:notes) => [note()],
+          optional(:preceding_invoice) => preceding_invoice(),
+          optional(:ship_to) => party(),
+          optional(:delivery_date) => Date.t()
         }
 
   @typedoc """

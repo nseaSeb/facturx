@@ -84,7 +84,7 @@ defmodule Facturx.CII do
          [
            context(inv, profile),
            document(inv),
-           transaction(inv)
+           transaction(inv, profile)
          ]}
 
       {:ok, ~s(<?xml version="1.0" encoding="UTF-8"?>) <> Saxy.encode!(doc)}
@@ -234,10 +234,35 @@ defmodule Facturx.CII do
     ])
   end
 
-  defp transaction(inv) do
+  # BT-127 and BT-127-00. EN 16931 caps ram:IncludedNote at one occurrence per
+  # line and leaves no room for ram:SubjectCode there — that code is
+  # EXT-FR-FE-183, a French extension on the target trajectory, and emitting one
+  # gets an EN 16931 document rejected. Both only open up in EXTENDED, so the
+  # profile decides rather than the caller.
+  defp line_notes(line, :extended), do: Enum.map(with_content(line), &note/1)
+
+  defp line_notes(line, _profile) do
+    # The first note *with content*, not simply the first: a leading entry
+    # carrying only a subject code would otherwise take the single slot the
+    # profile allows and emit nothing at all.
+    case with_content(line) do
+      [] -> []
+      [note | _] -> [wrap("ram:IncludedNote", t("ram:Content", note[:content]))]
+    end
+  end
+
+  # `""` is truthy, so testing the key alone is not enough — and an empty note
+  # would collapse to a bare <ram:IncludedNote/>. `blank?/1` is the module's
+  # convention: nil and "" are both absent.
+  defp with_content(line), do: Enum.reject(line[:notes] || [], &blank?(&1[:content]))
+
+  # Takes the profile `build/2` resolved, not `inv.profile`: the two differ as
+  # soon as a caller passes `profile:`, and the guideline URN would then say one
+  # thing while the line notes obeyed another.
+  defp transaction(inv, profile) do
     e(
       "rsm:SupplyChainTradeTransaction",
-      Enum.map(inv.lines, &line_item/1) ++
+      Enum.map(inv.lines, &line_item(&1, profile)) ++
         [
           header_agreement(inv),
           header_delivery(inv),
@@ -246,15 +271,12 @@ defmodule Facturx.CII do
     )
   end
 
-  defp line_item(line) do
+  defp line_item(line, profile) do
     e("ram:IncludedSupplyChainTradeLineItem", [
-      e("ram:AssociatedDocumentLineDocument", [
-        t("ram:LineID", line[:id]),
-        # BT-127 — content only: EN 16931 does not allow ram:SubjectCode on a line
-        # note (that is EXT-FR-FE-183, a French extension), and emitting one gets
-        # the invoice rejected. One note only, this element not being unbounded.
-        wrap("ram:IncludedNote", t("ram:Content", line[:note]))
-      ]),
+      e(
+        "ram:AssociatedDocumentLineDocument",
+        [t("ram:LineID", line[:id]) | line_notes(line, profile)]
+      ),
       e("ram:SpecifiedTradeProduct", [t("ram:Name", line[:name])]),
       e("ram:SpecifiedLineTradeAgreement", [
         # GrossPrice precedes NetPrice in LineTradeAgreementType.
@@ -262,7 +284,12 @@ defmodule Facturx.CII do
         e("ram:NetPriceProductTradePrice", [amount("ram:ChargeAmount", line[:net_price])])
       ]),
       e("ram:SpecifiedLineTradeDelivery", [
-        qty("ram:BilledQuantity", line[:quantity], line[:unit])
+        qty("ram:BilledQuantity", line[:quantity], line[:unit]),
+        # EXT-FR-FE-BG-10 then BG-11: LineTradeDeliveryType orders the quantities
+        # first, then ShipToTradeParty, then ActualDeliverySupplyChainEvent. Both
+        # are 0..1, hence single maps rather than lists.
+        line_ship_to(line, profile),
+        line_delivery_event(line, profile)
       ]),
       e("ram:SpecifiedLineTradeSettlement", [
         line_trade_tax(line),
@@ -272,10 +299,33 @@ defmodule Facturx.CII do
         allowances_and_charges(line),
         e("ram:SpecifiedTradeSettlementLineMonetarySummation", [
           amount("ram:LineTotalAmount", line[:line_total])
-        ])
+        ]),
+        # EXT-FR-FE-BG-06 — after the summation, as at header level. 0..1 here
+        # (minOccurs=0, no maxOccurs), hence a single map and not a list.
+        line_preceding_invoice(line, profile)
       ])
     ])
   end
+
+  # EXT-FR-FE-BG-06 / -136 / -138. A French extension on the target trajectory,
+  # so EN 16931 rejects it: the profile decides, as for the line notes.
+  defp line_preceding_invoice(line, :extended) do
+    case line[:preceding_invoice] do
+      nil -> nil
+      ref -> preceding_invoice(ref)
+    end
+  end
+
+  defp line_preceding_invoice(_line, _profile), do: nil
+
+  # EXT-FR-FE-BG-10 (`-149` to `-157`) and EXT-FR-FE-BG-11 (`-158*`). Same
+  # French extensions, same profile gate; both reuse the header-level emitters,
+  # the CII types being identical.
+  defp line_ship_to(line, :extended), do: party("ram:ShipToTradeParty", line[:ship_to])
+  defp line_ship_to(_line, _profile), do: nil
+
+  defp line_delivery_event(line, :extended), do: delivery_event(line[:delivery_date])
+  defp line_delivery_event(_line, _profile), do: nil
 
   defp line_trade_tax(line) do
     e("ram:ApplicableTradeTax", [
@@ -697,18 +747,46 @@ defmodule Facturx.CII do
     end
   end
 
+  # nil rather than [] when there is no note: `prune/1` drops nils only, and a
+  # line that went in without the key must come back without it for
+  # `parse(build(inv)) == inv` to hold. Same convention as line_allowances/2.
+  defp line_notes_of(li) do
+    case li
+         |> find("ram:AssociatedDocumentLineDocument")
+         |> find_all("ram:IncludedNote")
+         |> Enum.map(&parse_note/1) do
+      [] -> nil
+      notes -> notes
+    end
+  end
+
+  # EXT-FR-FE-BG-06, 0..1: nil rather than a map when the element is absent, so
+  # `prune/1` drops the key and the round-trip stays exact.
+  defp line_preceding_invoice_of(li) do
+    case path(li, ["ram:SpecifiedLineTradeSettlement", "ram:InvoiceReferencedDocument"]) do
+      nil -> nil
+      ref -> parse_preceding_invoice(ref)
+    end
+  end
+
   defp parse_line(li) do
     tax = path(li, ["ram:SpecifiedLineTradeSettlement", "ram:ApplicableTradeTax"])
     qty_node = path(li, ["ram:SpecifiedLineTradeDelivery", "ram:BilledQuantity"])
 
     prune(%{
       id: path_text(li, ["ram:AssociatedDocumentLineDocument", "ram:LineID"]),
-      note:
-        path_text(li, [
-          "ram:AssociatedDocumentLineDocument",
-          "ram:IncludedNote",
-          "ram:Content"
-        ]),
+      notes: line_notes_of(li),
+      preceding_invoice: line_preceding_invoice_of(li),
+      ship_to: parse_party(path(li, ["ram:SpecifiedLineTradeDelivery", "ram:ShipToTradeParty"])),
+      delivery_date:
+        parse_date(
+          path_text(li, [
+            "ram:SpecifiedLineTradeDelivery",
+            "ram:ActualDeliverySupplyChainEvent",
+            "ram:OccurrenceDateTime",
+            "udt:DateTimeString"
+          ])
+        ),
       name: path_text(li, ["ram:SpecifiedTradeProduct", "ram:Name"]),
       net_price:
         num(

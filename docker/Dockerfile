@@ -31,6 +31,7 @@ FROM ghcr.io/willemvlh/saxon-server
 # the image because BSD-3-Clause requires the licence text to travel with a
 # redistribution, and UN/CEFACT requires its notice to accompany the schemas.
 COPY priv/schematron/en16931/FACTUR-X_EN16931_codedb.xml /opt/facturx/
+COPY priv/schematron/extended/FACTUR-X_EXTENDED_codedb.xml /opt/facturx/
 COPY priv/schematron/LICENSE.akretion.txt /opt/facturx/
 COPY priv/NOTICE.md /opt/facturx/
 

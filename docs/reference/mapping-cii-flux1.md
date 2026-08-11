@@ -15,31 +15,40 @@ Table de correspondance complète entre les **données réglementaires du Flux 1
 > Les chemins sont reproduits depuis l'annexe. Seule correction apportée : une
 > parenthèse fermante orpheline après certains `@format` (coquille de la source).
 
-## Ce que les « — » impliquent réellement
+## Couverture complète, et à quelle condition
 
-**Le socle est couvert dans les limites du profil EN 16931.** Les 20 données encore
-non émises se répartissent en deux groupes, et aucune n'est atteignable avec le
-schéma actuellement embarqué :
+**Les 116 données sont émises.** Il n'y a plus de ligne `—`.
 
-### 1. Les extensions françaises `EXT-FR-FE-*` (19 données)
+Mais 20 d'entre elles — les 19 extensions françaises `EXT-FR-FE-*` et le
+conteneur de note de ligne `BT-127-00` — n'existent **qu'en profil `:extended`**.
+Elles ne font pas partie de l'EN 16931, dont le XSD rejette tout élément hors
+profil ; c'est pourquoi le XSD EXTENDED est embarqué en plus
+(`priv/xsd/extended/`), avec son schematron.
 
-Toutes en trajectoire **CIBLE**, et toutes au **niveau ligne** : sous-lignes,
-référence à une facture antérieure en ligne, adresse et date de livraison à la
-ligne, code sujet d'une note de ligne.
+Concrètement : `Facturx.build(inv, profile: :extended)` produit les 116 données,
+`Facturx.build(inv)` en produit 96 et laisse tomber les 20 autres — sans erreur,
+délibérément, plutôt que de fabriquer un document que la plateforme rejetterait.
 
-Elles ne font pas partie du profil **EN 16931**, dont le XSD embarqué rejette tout
-élément hors profil. Les émettre demanderait donc les XSD `F1_FULL` du PPF, un
-autre chantier — voir l'[ADR 0002](../adr/0002-conformite-reforme-fr.md).
+> **Ce qu'un profil autorise ne dépend pas de l'appelant.** `BT-127-00` (note de
+> ligne répétée) et `EXT-FR-FE-183` (son code sujet) ne sont émis qu'en
+> `:extended` ; en EN 16931, `Facturx.CII.build/2` ne garde qu'une note et retire
+> le code sujet, plutôt que de produire un document qui serait rejeté. Les lignes
+> `✅` de ce tableau décrivent donc la trajectoire CIBLE.
 
-### 2. `BT-127-00` — conteneur de note de ligne en `0..n`
-
-Le contenu (`BT-127`) est émis, mais une seule note par ligne : `IncludedNote` est
-limité à une occurrence dans le XSD EN 16931, là où l'annexe prévoit `0..n` (ce qui
-vaut pour le profil EXTENDED). Même limite de profil que ci-dessus.
-
-> ⚠️ La colonne **Émis** est maintenue **à la main**. Elle est à revérifier contre
-> `Facturx.CII.build/2` à chaque ajout d'élément, sans quoi le décompte dérive —
-> c'est déjà arrivé avec `BT-111`, dont le chemin CII est partagé avec `BT-110`.
+> La colonne **Émis** est écrite à la main, mais elle n'est plus livrée à
+> elle-même : `Facturx.MappingAnnexeTest` lit ce tableau et évalue chacun des 116
+> chemins contre le document produit par `Facturx.CII.build/2`. Ce qui est vérifié
+> est le **nombre d'occurrences**, pas la simple présence : neuf chemins sont
+> revendiqués par deux lignes chacun — `BT-110` et `BT-111` sont tous deux
+> `ram:TaxTotalAmount`, distingués par leur seul `currencyID`, et les quatre
+> familles remise/charge par leur seul `ChargeIndicator`. Un chemin portant moins
+> de nœuds qu'il n'a de lignes cochées, ou un chemin sans ligne cochée qui porte
+> quoi que ce soit, fait échouer la suite.
+>
+> ⚠️ Corollaire : toute donnée nouvellement émise doit être renseignée dans
+> `Facturx.TestInvoice.maximal/0`, sinon sa ligne apparaît comme une dérive. Le
+> document témoin est construit en `:extended`, la trajectoire que ce tableau
+> décrit.
 
 | ID | Card. | Traj. | Donnée | Émis | Chemin CII (relatif à `/rsm:CrossIndustryInvoice`) |
 |---|---|---|---|---|---|
@@ -121,29 +130,29 @@ vaut pour le profil EXTENDED). Même limite de profil que ci-dessus.
 | `BT-120` | 0..1 | D | Motif d'exonération de la TVA | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:ApplicableTradeTax/ram:ExemptionReason` |
 | `BT-121` | 0..1 | D | Code de motif d'exonération de la TVA | ✅ | `/rsm:SupplyChainTradeTransaction/ram:ApplicableHeaderTradeSettlement/ram:ApplicableTradeTax/ram:ExemptionReasonCode` |
 | `BG-25` | 1..n | C | LIGNE DE FACTURE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem` |
-| `BT-127-00` | 0..n | C | Note de ligne de facture | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:AssociatedDocumentLineDocument/ram:IncludedNote` |
-| `EXT-FR-FE-183` | 0..1 | C | Code sujet de la note de ligne | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:AssociatedDocumentLineDocument/ram:IncludedNote/ram:SubjectCode` |
+| `BT-127-00` | 0..n | C | Note de ligne de facture | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:AssociatedDocumentLineDocument/ram:IncludedNote` |
+| `EXT-FR-FE-183` | 0..1 | C | Code sujet de la note de ligne | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:AssociatedDocumentLineDocument/ram:IncludedNote/ram:SubjectCode` |
 | `BT-127` | 0..1 | C | Note de ligne de facture | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:AssociatedDocumentLineDocument/ram:IncludedNote/ram:Content` |
 | `BT-129` | 1..1 | C | Quantité facturée | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:BilledQuantity` |
 | `BT-130` | 1..1 | C | Code de l'unité de mesure de la quantité facturée | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:BilledQuantity/@unitCode` |
-| `EXT-FR-FE-BG-06` | 0..1 | C | REFERENCE A FACTURE ANTERIEURE EN LIGNE (permet de gérer les reprises en ligne, notamment sur factures d'acompte) | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:InvoiceReferencedDocument` |
-| `EXT-FR-FE-136` | 0..1 | C | ID de la facture antérieure | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:InvoiceReferencedDocument/ram:IssuerAssignedID` |
-| `EXT-FR-FE-138` | 0..1 | C | Date de facture antérieure | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:InvoiceReferencedDocument/ram:FormattedIssueDateTime/qdt:DateTimeString` |
-| `EXT-FR-FE-138-1` | 0..1 | C | Format date | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:InvoiceReferencedDocument/ram:FormattedIssueDateTime/qdt:DateTimeString@format` |
-| `EXT-FR-FE-BG-10` | 0..1 | C | Détail de l'adresse de livraison à la ligne (Gestion du multi livraison) | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty` |
-| `EXT-FR-FE-149` | 0..1 | C | Nom du lieu de livraison | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:Name` |
-| `EXT-FR-FE-150` | 0..1 | C | ADRESSE POSTALE DE LIVRAISON A LA LIGNE | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress` |
-| `EXT-FR-FE-151` | 0..1 | C | Ligne Adresse 1 (si différent entête) | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:LineOne` |
-| `EXT-FR-FE-152` | 0..1 | C | Ligne adresse 2 (si différent entête) | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:LineTwo` |
-| `EXT-FR-FE-153` | 0..1 | C | Ligne Adresse 3 (si différent entête) | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:LineThree` |
-| `EXT-FR-FE-154` | 0..1 | C | Ville de livraison (si différent entête) | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CityName` |
-| `EXT-FR-FE-155` | 0..1 | C | Code Postal de livraison (si différent entête) | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:PostcodeCode` |
-| `EXT-FR-FE-156` | 0..1 | C | Subdivision Pays (si différent entête) | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CountrySubDivisionName` |
-| `EXT-FR-FE-157` | 1..1 | C | Code Pays (si différent entête) | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CountryID` |
-| `EXT-FR-FE-BG-11` | 0..1 | C | Détail sur la livraison réelle | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ActualDeliverySupplyChainEvent` |
-| `EXT-FR-FE-158-0` | 0..1 | C | Date de livraison à la ligne | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime` |
-| `EXT-FR-FE-158` | 0..1 | C | Date de livraison à la ligne valeur | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime/udt:DateTimeString` |
-| `EXT-FR-FE-158-1` | 0..1 | C | Format date | — | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime/udt:DateTimeString/@format` |
+| `EXT-FR-FE-BG-06` | 0..1 | C | REFERENCE A FACTURE ANTERIEURE EN LIGNE (permet de gérer les reprises en ligne, notamment sur factures d'acompte) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:InvoiceReferencedDocument` |
+| `EXT-FR-FE-136` | 0..1 | C | ID de la facture antérieure | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:InvoiceReferencedDocument/ram:IssuerAssignedID` |
+| `EXT-FR-FE-138` | 0..1 | C | Date de facture antérieure | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:InvoiceReferencedDocument/ram:FormattedIssueDateTime/qdt:DateTimeString` |
+| `EXT-FR-FE-138-1` | 0..1 | C | Format date | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:InvoiceReferencedDocument/ram:FormattedIssueDateTime/qdt:DateTimeString@format` |
+| `EXT-FR-FE-BG-10` | 0..1 | C | Détail de l'adresse de livraison à la ligne (Gestion du multi livraison) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty` |
+| `EXT-FR-FE-149` | 0..1 | C | Nom du lieu de livraison | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:Name` |
+| `EXT-FR-FE-150` | 0..1 | C | ADRESSE POSTALE DE LIVRAISON A LA LIGNE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress` |
+| `EXT-FR-FE-151` | 0..1 | C | Ligne Adresse 1 (si différent entête) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:LineOne` |
+| `EXT-FR-FE-152` | 0..1 | C | Ligne adresse 2 (si différent entête) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:LineTwo` |
+| `EXT-FR-FE-153` | 0..1 | C | Ligne Adresse 3 (si différent entête) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:LineThree` |
+| `EXT-FR-FE-154` | 0..1 | C | Ville de livraison (si différent entête) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CityName` |
+| `EXT-FR-FE-155` | 0..1 | C | Code Postal de livraison (si différent entête) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:PostcodeCode` |
+| `EXT-FR-FE-156` | 0..1 | C | Subdivision Pays (si différent entête) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CountrySubDivisionName` |
+| `EXT-FR-FE-157` | 1..1 | C | Code Pays (si différent entête) | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ShipToTradeParty/ram:PostalTradeAddress/ram:CountryID` |
+| `EXT-FR-FE-BG-11` | 0..1 | C | Détail sur la livraison réelle | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ActualDeliverySupplyChainEvent` |
+| `EXT-FR-FE-158-0` | 0..1 | C | Date de livraison à la ligne | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime` |
+| `EXT-FR-FE-158` | 0..1 | C | Date de livraison à la ligne valeur | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime/udt:DateTimeString` |
+| `EXT-FR-FE-158-1` | 0..1 | C | Format date | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeDelivery/ram:ActualDeliverySupplyChainEvent/ram:OccurrenceDateTime/udt:DateTimeString/@format` |
 | `BG-26` | 0..1 | C | PERIODE DE FACTURATION D'UNE LIGNE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod` |
 | `BT-134` | 0..1 | C | Date de début de période de facturation d'une ligne | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:StartDateTime/udt:DateTimeString` |
 | `BT-134-1` | 1..1 | C | Format date | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedLineTradeSettlement/ram:BillingSpecifiedPeriod/ram:StartDateTime/udt:DateTimeString@format` |
@@ -160,4 +169,4 @@ vaut pour le profil EXTENDED). Même limite de profil que ci-dessus.
 | `BG-31` | 1..1 | C | INFORMATION SUR L'ARTICLE | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedTradeProduct` |
 | `BT-153` | 1..1 | C | Nom de l'article | ✅ | `/rsm:SupplyChainTradeTransaction/ram:IncludedSupplyChainTradeLineItem/ram:SpecifiedTradeProduct/ram:Name` |
 
-**Couverture** : 96 / 116 données réglementaires émises.
+**Couverture** : 116 / 116 données réglementaires émises.
