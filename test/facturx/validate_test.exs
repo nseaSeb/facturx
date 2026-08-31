@@ -577,4 +577,47 @@ defmodule Facturx.ValidateTest do
       assert Enum.any?(findings, &(&1.message =~ "R008"))
     end
   end
+
+  # The three lower profiles are the ones the XSD cannot police on its own. It
+  # types every party alike, so it accepts a MINIMUM buyer carrying an address
+  # and a VAT registration; only the schematron says those belong to the seller
+  # and to nobody else. Which is exactly how that rule was found.
+  describe "against the schematron of the profiles whose XSL is not bundled" do
+    @describetag :venv_schematron
+    @describetag timeout: 300_000
+
+    @venv Path.expand(
+            "../../.venv-dev/lib/python3.14/site-packages/facturx/xsd_and_schematron",
+            __DIR__
+          )
+
+    @unbundled [
+      {:minimum, "facturx-minimum/Factur-X_1.09_MINIMUM.xsl", "FACTUR-X_MINIMUM_codedb.xml"},
+      {:basic_wl, "facturx-basicwl/Factur-X_1.09_BASICWL.xsl", "FACTUR-X_BASIC-WL_codedb.xml"},
+      {:basic, "facturx-basic/Factur-X_1.09_BASIC.xsl", "FACTUR-X_BASIC_codedb.xml"}
+    ]
+
+    setup do
+      url = System.get_env("FACTURX_SAXON_URL") || raise "set FACTURX_SAXON_URL"
+      {:ok, endpoint: url}
+    end
+
+    for {profile, xsl_rel, codedb} <- @unbundled do
+      test "a #{profile} document passes the #{profile} business rules", %{endpoint: endpoint} do
+        # The codedb is resolved by the XSLT through document(), which Saxon only
+        # allows with --insecure; the container carries the file, so point the
+        # stylesheet at it rather than at the network.
+        xsl =
+          @venv
+          |> Path.join(unquote(xsl_rel))
+          |> File.read!()
+          |> String.replace(unquote(codedb), "file:///opt/facturx/#{unquote(codedb)}")
+
+        {:ok, xml} = Facturx.build(Facturx.TestInvoice.maximal(), profile: unquote(profile))
+
+        assert {:ok, :valid} =
+                 Facturx.validate(xml, endpoint: endpoint, xsl: xsl, receive_timeout: 120_000)
+      end
+    end
+  end
 end

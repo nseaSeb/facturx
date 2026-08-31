@@ -97,6 +97,40 @@ defmodule Facturx.CIIPropertyTest do
         assert {:ok, :valid} = Facturx.validate_xsd(xml, profile: :extended)
       end
     end
+
+    # The same two claims, across the five profiles. The pruning `build/2` does
+    # per profile is a second source of loss on top of whatever the generator
+    # removed, so the fixed point is the only form that survives it — and it is
+    # what says the pruning is *consistent*: whatever a profile drops, it drops
+    # the same way on the second pass, and parsing back never invents it.
+    property "the fixed point holds in every profile, and the result validates" do
+      check all(
+              inv <- pruned_invoice(),
+              profile <- member_of(Facturx.profiles())
+            ) do
+        assert {:ok, xml} = CII.build(inv, profile: profile)
+        assert {:ok, :valid} = Facturx.validate_xsd(xml, profile: profile)
+
+        assert {:ok, parsed} = CII.parse(xml)
+        assert {:ok, xml2} = CII.build(parsed, profile: profile)
+
+        assert xml2 == xml
+      end
+    end
+
+    property "a leaner profile is always a subset of the next one up" do
+      check all(inv <- pruned_invoice()) do
+        sizes =
+          for profile <- Facturx.profiles() do
+            {:ok, xml} = CII.build(inv, profile: profile)
+            byte_size(xml)
+          end
+
+        # Only the guideline URN grows in the other direction, and never by
+        # enough to reverse the order — MINIMUM's URN is in fact the shortest.
+        assert sizes == Enum.sort(sizes)
+      end
+    end
   end
 
   describe "Decimal rendering" do

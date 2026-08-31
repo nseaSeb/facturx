@@ -350,6 +350,16 @@ defmodule Facturx.PdfRoundtripTest do
       assert {:ok, _} = Facturx.generate(pdf, @xml)
     end
 
+    test "a document quoting the /Encrypt syntax itself is not read as encryption" do
+      # The shape the regex looks for, verbatim, inside an uncompressed XMP
+      # packet. Only a trailer dictionary declares encryption, so a scan of the
+      # whole file would refuse a perfectly readable document here.
+      pdf = TestPDF.base(title: "spec: /Encrypt << /Filter /Standard >>")
+
+      refute Facturx.PDF.encrypted?(pdf)
+      assert {:ok, _} = Facturx.generate(pdf, @xml)
+    end
+
     test "refuses a cross-reference stream, and says so when extracting one" do
       pdf = TestPDF.xref_stream_base()
 

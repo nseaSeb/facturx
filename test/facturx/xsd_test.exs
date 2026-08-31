@@ -84,9 +84,48 @@ defmodule Facturx.XSDTest do
     assert {:error, {:invalid, [_ | _]}} = Facturx.validate_xsd(bad)
   end
 
-  test "errors for a profile whose XSD is not bundled" do
-    assert Facturx.validate_xsd(sample_xml(), profile: :basic) ==
-             {:error, {:xsd_not_bundled, :basic}}
+  test "every profile the library builds has its schema bundled" do
+    for profile <- Facturx.profiles() do
+      refute match?(
+               {:error, {:xsd_not_bundled, _}},
+               Facturx.validate_xsd(sample_xml(), profile: profile)
+             )
+    end
+  end
+
+  test "errors for a profile that does not exist" do
+    assert Facturx.validate_xsd(sample_xml(), profile: :zugferd_1p0) ==
+             {:error, {:xsd_not_bundled, :zugferd_1p0}}
+  end
+
+  describe "every profile against its own schema" do
+    # The guard that makes the profiles real rather than nominal. Before this,
+    # `build/2` emitted the same document whatever the profile and only changed
+    # the guideline URN, so MINIMUM and BASIC WL produced non-conformant files
+    # carrying a conformant claim — and nothing in the library could tell.
+    test "the maximal invoice, built in each profile, validates against that profile" do
+      inv = Facturx.TestInvoice.maximal()
+
+      for profile <- Facturx.profiles() do
+        {:ok, xml} = Facturx.build(inv, profile: profile)
+
+        assert Facturx.validate_xsd(xml, profile: profile) == {:ok, :valid},
+               "#{profile} document rejected by the #{profile} schema"
+      end
+    end
+
+    test "each profile emits strictly less than the next one up" do
+      inv = Facturx.TestInvoice.maximal()
+
+      sizes =
+        for profile <- Facturx.profiles() do
+          {:ok, xml} = Facturx.build(inv, profile: profile)
+          byte_size(xml)
+        end
+
+      assert sizes == Enum.sort(sizes)
+      assert Enum.uniq(sizes) == sizes
+    end
   end
 
   describe "EXTENDED profile" do

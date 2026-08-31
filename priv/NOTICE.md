@@ -7,7 +7,10 @@ without downloading anything at runtime.
 
 | Path | Files | Upstream |
 |---|---|---|
-| `priv/xsd/en16931/` | `Factur-X_EN16931.xsd` + 3 imported UN/CEFACT schemas | Factur-X / EN 16931 standard, as packaged by [`akretion/factur-x`](https://github.com/akretion/factur-x) |
+| `priv/xsd/minimum/` | `Factur-X_MINIMUM.xsd` + 3 imported UN/CEFACT schemas | Factur-X / EN 16931 standard, as packaged by [`akretion/factur-x`](https://github.com/akretion/factur-x) |
+| `priv/xsd/basicwl/` | `Factur-X_BASICWL.xsd` + 3 imported UN/CEFACT schemas | idem, BASIC WL profile |
+| `priv/xsd/basic/` | `Factur-X_BASIC.xsd` + 3 imported UN/CEFACT schemas | idem, BASIC profile |
+| `priv/xsd/en16931/` | `Factur-X_EN16931.xsd` + 3 imported UN/CEFACT schemas | idem, EN 16931 profile |
 | `priv/xsd/extended/` | `Factur-X_EXTENDED.xsd` + 3 imported UN/CEFACT schemas | idem, EXTENDED profile |
 | `priv/schematron/en16931/` | `Factur-X_1.09_EN16931.xsl`, `FACTUR-X_EN16931_codedb.xml` | idem |
 | `priv/schematron/extended/` | `Factur-X_1.09_EXTENDED.xsl`, `FACTUR-X_EXTENDED_codedb.xml` | idem, EXTENDED profile |
@@ -21,7 +24,7 @@ so the notice travels with the distribution, as its terms require.
 
 ---
 
-## UN/CEFACT (CII schemas under `priv/xsd/en16931/`)
+## UN/CEFACT (CII schemas under `priv/xsd/`)
 
 Reproduced verbatim from the UN/CEFACT `CrossIndustryInvoice` schema modules
 (schema version 100.D22B, schema date 10 October 2016):

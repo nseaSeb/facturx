@@ -25,9 +25,30 @@ projects, and to fill the gap on Hex.pm.
 | Validate against the CII XSD | `Facturx.XSD` | none (pure Elixir, OTP `:xmerl_xsd`) |
 | Validate against the Schematron | `Facturx.Validate` | **optional** — `:req` + a Saxon HTTP endpoint |
 
-Both validators ship schemas for the `:en16931` and `:extended` profiles; the
-other three return `{:error, {:xsd_not_bundled, profile}}` /
-`{:error, {:schematron_not_bundled, profile}}`.
+### Profiles
+
+All five Factur-X profiles are built, and `Facturx.CII.build/2` restricts what it
+emits to what each one allows — a `:minimum` document is a MINIMUM document, not
+an EN 16931 one wearing a MINIMUM label.
+
+| Profile | Carries | XSD bundled | Schematron bundled |
+|---|---|---|---|
+| `:minimum` | header only; no VAT breakdown, no lines. Seller address only | ✅ | — |
+| `:basic_wl` | full header, no lines ("without lines") | ✅ | — |
+| `:basic` | header and lines, EN 16931-compliant subset | ✅ | — |
+| `:en16931` | the norm itself | ✅ | ✅ |
+| `:extended` | the norm plus the French `EXT-FR-FE-*` extensions | ✅ | ✅ |
+
+The five schemas together weigh 80 KB; the five schematrons would add 4 MB, so
+only two ship. `Facturx.validate/2` returns
+`{:error, {:schematron_not_bundled, profile}}` for the other three — pass your
+own compiled XSLT via `:xsl` if you have one.
+
+> **MINIMUM is not an invoice.** Its schema has no `ram:ApplicableTradeTax`, so
+> it cannot carry the VAT breakdown (BG-23) that the French mandate requires from
+> day one. It exists as an accounting aid. BASIC WL carries no lines, which the
+> mandate requires on its target trajectory (BG-25). Neither is a valid French
+> e-invoice; `:basic` is the leanest profile that is.
 
 The EN 16931 Schematron ships compiled in `priv/schematron/`. `validate/2` posts
 the XML + XSLT to a Saxon server and reads back the SVRL report. The XSLT resolves

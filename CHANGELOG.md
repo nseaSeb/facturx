@@ -24,13 +24,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   `{:error, :malformed_dictionary}` / `{:error, :dictionary_not_found}`, and both
   `embed/3` and `Facturx.Extract.extract/1` carry a last-resort `rescue`. Pinned
   by a property over arbitrary truncations and junk suffixes.
-- **Encrypted PDFs are refused instead of misread.** Nothing looked for
+- **Encrypted PDFs are refused instead of misread**, and only on the strength
+  of a trailer dictionary. Nothing looked for
   `/Encrypt`, so an encrypted file failed to inflate or produced meaningless
   bytes. Both paths now return `{:error, :encrypted_pdf_unsupported}` — and on
   extraction that is reported in place of `:no_embedded_file`, since an
   unreadable attachment is not an absent one.
 
 ### Added
+- **The MINIMUM, BASIC WL and BASIC profiles are real.** `Facturx.CII.build/2`
+  used to emit the same document whatever the profile and change only the
+  guideline URN, so those three produced non-conformant files carrying a
+  conformant claim — and, their schemas not being bundled, nothing in the library
+  could tell. `build/2` now restricts what it emits to what each profile allows,
+  and all five XSDs ship (80 KB in total). Each profile is checked against its
+  own schema, and against its own schematron where one is available.
+
+  Two findings from that work, neither visible in the XSD:
+
+    * BT-111 (the VAT total in the accounting currency) only goes where BT-6
+      goes. MINIMUM has no `TaxCurrencyCode`, so emitting it there stated an
+      amount in a currency the document never declared. Every profile's schema
+      allows two `TaxTotalAmount`; the build/parse fixed point is what caught it.
+    * In MINIMUM the postal address and the tax registration belong to the seller
+      alone — required there (BR-08, BR-09), refused on the buyer. The XSD types
+      every party alike and accepts both; only the schematron says otherwise.
+
 - Property-based tests (`stream_data`): the build/parse fixed point over
   randomly pruned invoices, `Decimal` value *and* scale preservation, XMP
   promotion idempotence and well-formedness, and PDF payload round-trips over

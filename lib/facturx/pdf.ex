@@ -94,9 +94,29 @@ defmodule Facturx.PDF do
 
   Neither module can read an encrypted file, and neither used to notice: the
   outcome was a failed inflate or meaningless bytes rather than an error.
+
+  Only the trailer dictionaries are searched, `/Encrypt` being meaningful there
+  and nowhere else. Scanning the whole file would refuse documents that merely
+  contain those bytes — an uncompressed XMP packet quoting the PDF spec, a
+  content stream, a superseded trailer left behind by a decrypt-then-update.
+  Every trailer is checked rather than only the last: an incremental update adds
+  a trailer that inherits what the previous one declared.
+
+  A file whose cross-reference is a stream has no `trailer` keyword at all and
+  carries `/Encrypt` in the XRef stream dictionary instead. That shape is out of
+  reach here, and both callers refuse it for their own reasons first.
   """
   @spec encrypted?(binary()) :: boolean()
-  def encrypted?(pdf), do: Regex.match?(@encrypt, pdf)
+  def encrypted?(pdf) do
+    pdf
+    |> :binary.matches("trailer")
+    |> Enum.any?(fn {pos, _} ->
+      case balanced_dict(pdf, pos) do
+        {:ok, dict} -> Regex.match?(@encrypt, dict)
+        {:error, _} -> false
+      end
+    end)
+  end
 
   @doc "`stream` must be followed by CRLF or LF; the data begins after it."
   @spec skip_eol(binary(), non_neg_integer()) :: non_neg_integer()

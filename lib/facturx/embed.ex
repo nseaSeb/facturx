@@ -48,9 +48,14 @@ defmodule Facturx.Embed do
   rescue
     # The input is a caller-supplied binary, so every malformed shape it can
     # take is an input error and owed an `{:error, _}` — the contract this spec
-    # states. The known ones are refused by name above; this catches the rest
-    # rather than letting an exception cross the API boundary.
-    e -> {:error, e}
+    # states. The known ones are refused by name above; this catches the rest.
+    #
+    # Deliberately narrow, and the same list `Facturx.Extract` uses: these three
+    # are what slicing and matching on a malformed binary raise. A
+    # `FunctionClauseError` from a future defect in the writer is a bug here, not
+    # a fault in the caller's file, and must not be served as one — a blanket
+    # rescue would also let the "never raises" property pass over it.
+    e in [ArgumentError, MatchError, ErlangError] -> {:error, e}
   end
 
   # --- input validation -----------------------------------------------------

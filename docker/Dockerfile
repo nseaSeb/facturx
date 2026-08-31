@@ -29,7 +29,17 @@
 # build that answers 400 to every /transform request, turning all 15 schematron
 # tests red on a change that had nothing to do with them. A validation image has
 # to be reproducible or it is not evidence of anything.
-FROM ghcr.io/willemvlh/saxon-server@sha256:c0959035f4a659584e8a846132cd34d8618bea63990ad0099f42ff6957cd108b
+#
+# The tag is carried alongside the digest, and is not decoration: Dependabot
+# resolves a digest by re-resolving a tag, so a digest-only FROM is one it can
+# never open a PR against — the pin would go stale in exactly the silence
+# .github/dependabot.yml claims to prevent. The digest is what is used; the tag
+# is what makes the update visible.
+#
+# v1.15 is where the pin sits. Upstream also publishes a v2.x line (v2.7 at the
+# time of writing) which nothing here has evaluated, and its :latest currently
+# resolves to v1.17 — one more reason not to track it.
+FROM ghcr.io/willemvlh/saxon-server:v1.15@sha256:c0959035f4a659584e8a846132cd34d8618bea63990ad0099f42ff6957cd108b
 
 # Third-party artefacts — see priv/NOTICE.md at the repository root. Carried into
 # the image because BSD-3-Clause requires the licence text to travel with a
