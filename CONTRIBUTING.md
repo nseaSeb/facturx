@@ -43,6 +43,20 @@ mix dialyzer
 mix test
 ```
 
+For a change touching `Facturx.Embed`, `Facturx.Extract` or `Facturx.PDF`, add:
+
+```sh
+mix facturx.harness
+```
+
+The suite proves structure — that what `Embed` writes, `Extract` reads back. It
+cannot prove conformance: its synthetic base has no font, no OutputIntent and no
+ICC profile, deliberately, so that it needs no fixtures. `mix facturx.harness`
+is the oracle for the rest — veraPDF on the output of all five profiles, and
+byte parity of the payload against the Python `akretion/factur-x` reference. It
+needs veraPDF, the dev virtualenv and the private fixtures, and it fails rather
+than reporting a success it did not establish.
+
 ## Adding a data item to the CII mapping
 
 This sequence is not ceremony; it is what has caught the mistakes. Element order

@@ -77,6 +77,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
       alone — required there (BR-08, BR-09), refused on the buyer. The XSD types
       every party alike and accepts both; only the schematron says otherwise.
 
+- `mix facturx.harness`: the PDF/A-3 conformance and Python-parity oracle, until
+  now a Livebook run by hand. veraPDF over the output of all five profiles, plus
+  byte parity of the payload against `akretion/factur-x`. It lives under `dev/`,
+  compiled in `:dev` only, so it never reaches the published package.
 - Property-based tests (`stream_data`): the build/parse fixed point over
   randomly pruned invoices, `Decimal` value *and* scale preservation, XMP
   promotion idempotence and well-formedness, and PDF payload round-trips over

@@ -26,6 +26,10 @@ defmodule Facturx.MixProject do
   # Embed / Extract paths run in CI without the private fixtures. package/0 does
   # not ship test/, so nothing of it reaches Hex.
   defp elixirc_paths(:test), do: ["lib", "test/support"]
+  # dev/ holds `mix facturx.harness`, the veraPDF + Python-parity oracle. It is
+  # compiled here and nowhere else, so package/0 shipping all of lib/ cannot
+  # carry a task that needs fixtures nobody else has.
+  defp elixirc_paths(:dev), do: ["lib", "dev"]
   defp elixirc_paths(_), do: ["lib"]
 
   def application do
