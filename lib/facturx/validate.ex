@@ -36,7 +36,10 @@ defmodule Facturx.Validate do
       {:ok, :valid} = Facturx.validate(xml, profile: :en16931,
                                        endpoint: "http://localhost:5000/transform")
 
-  The `:en16931` and `:extended` schematrons ship; other profiles return
+  All five profile schematrons ship, under `priv/schematron/`. They are the bulk
+  of the package — 4.4 MB on disk — but they compress to about 78 KB of the
+  published tarball, which is why all five are bundled rather than the two that
+  once were. An unknown profile returns
   `{:error, {:schematron_not_bundled, profile}}`.
   """
 
@@ -45,6 +48,15 @@ defmodule Facturx.Validate do
   # profile => {bundled xsl (relative to priv/schematron), codedb filename,
   #             public codedb URL used to resolve document(...) in the XSLT}
   @schematron %{
+    minimum:
+      {"minimum/Factur-X_1.09_MINIMUM.xsl", "FACTUR-X_MINIMUM_codedb.xml",
+       "https://raw.githubusercontent.com/akretion/factur-x/refs/heads/master/src/facturx/xsd_and_schematron/facturx-minimum/FACTUR-X_MINIMUM_codedb.xml"},
+    basic_wl:
+      {"basicwl/Factur-X_1.09_BASICWL.xsl", "FACTUR-X_BASIC-WL_codedb.xml",
+       "https://raw.githubusercontent.com/akretion/factur-x/refs/heads/master/src/facturx/xsd_and_schematron/facturx-basicwl/FACTUR-X_BASIC-WL_codedb.xml"},
+    basic:
+      {"basic/Factur-X_1.09_BASIC.xsl", "FACTUR-X_BASIC_codedb.xml",
+       "https://raw.githubusercontent.com/akretion/factur-x/refs/heads/master/src/facturx/xsd_and_schematron/facturx-basic/FACTUR-X_BASIC_codedb.xml"},
     en16931:
       {"en16931/Factur-X_1.09_EN16931.xsl", "FACTUR-X_EN16931_codedb.xml",
        "https://raw.githubusercontent.com/akretion/factur-x/refs/heads/master/src/facturx/xsd_and_schematron/facturx-en16931/FACTUR-X_EN16931_codedb.xml"},

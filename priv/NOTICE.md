@@ -12,7 +12,10 @@ without downloading anything at runtime.
 | `priv/xsd/basic/` | `Factur-X_BASIC.xsd` + 3 imported UN/CEFACT schemas | idem, BASIC profile |
 | `priv/xsd/en16931/` | `Factur-X_EN16931.xsd` + 3 imported UN/CEFACT schemas | idem, EN 16931 profile |
 | `priv/xsd/extended/` | `Factur-X_EXTENDED.xsd` + 3 imported UN/CEFACT schemas | idem, EXTENDED profile |
-| `priv/schematron/en16931/` | `Factur-X_1.09_EN16931.xsl`, `FACTUR-X_EN16931_codedb.xml` | idem |
+| `priv/schematron/minimum/` | `Factur-X_1.09_MINIMUM.xsl`, `FACTUR-X_MINIMUM_codedb.xml` | idem, MINIMUM profile |
+| `priv/schematron/basicwl/` | `Factur-X_1.09_BASICWL.xsl`, `FACTUR-X_BASIC-WL_codedb.xml` | idem, BASIC WL profile |
+| `priv/schematron/basic/` | `Factur-X_1.09_BASIC.xsl`, `FACTUR-X_BASIC_codedb.xml` | idem, BASIC profile |
+| `priv/schematron/en16931/` | `Factur-X_1.09_EN16931.xsl`, `FACTUR-X_EN16931_codedb.xml` | idem, EN 16931 profile |
 | `priv/schematron/extended/` | `Factur-X_1.09_EXTENDED.xsl`, `FACTUR-X_EXTENDED_codedb.xml` | idem, EXTENDED profile |
 
 Both sets originate from the Factur-X standard published by **FNFE-MPE**, whose

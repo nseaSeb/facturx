@@ -16,9 +16,7 @@ defmodule Facturx.XSD do
   line-level French extensions `EXT-FR-FE-*`. An unknown profile returns
   `{:error, {:xsd_not_bundled, profile}}`.
 
-  The matching schematrons ship for `:en16931` and `:extended` only: those two
-  weigh 2.8 MB, and the other three would add 4 MB more. See `Facturx.Validate`,
-  whose `:xsl` option takes a stylesheet of your own.
+  The matching schematrons ship for all five too — see `Facturx.Validate`.
 
   ## Security
 

@@ -257,10 +257,13 @@ defmodule Facturx.XSDTest do
                Facturx.validate(xml, endpoint: "http://127.0.0.1:1/transform")
     end
 
-    test "a profile with no schematron still says so" do
+    test "a BASIC document selects the BASIC rule set, which now ships too" do
       {:ok, xml} = Facturx.build(%{Facturx.TestInvoice.maximal() | profile: :basic})
 
-      assert Facturx.validate(xml) == {:error, {:schematron_not_bundled, :basic}}
+      # Same closed port, same reasoning: :saxon_unreachable means the profile
+      # was detected from the guideline URN and its stylesheet read.
+      assert {:error, {:saxon_unreachable, _}} =
+               Facturx.validate(xml, endpoint: "http://127.0.0.1:1/transform")
     end
   end
 

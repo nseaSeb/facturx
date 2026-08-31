@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
-## Unreleased
+## [0.7.0] - 2026-08-31
 
 ### Fixed
 - **A stream is no longer cut short by its own contents.** `/Length` is now
@@ -37,8 +37,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   guideline URN, so those three produced non-conformant files carrying a
   conformant claim — and, their schemas not being bundled, nothing in the library
   could tell. `build/2` now restricts what it emits to what each profile allows,
-  and all five XSDs ship (80 KB in total). Each profile is checked against its
-  own schema, and against its own schematron where one is available.
+  and all five XSDs ship (80 KB in total), along with all five schematrons. Each
+  profile is checked against its own schema *and* its own rule set in CI.
+
+  On the schematrons: `priv/` is now 4.4 MB on disk, which is what made the
+  first pass bundle only two of them. That was the wrong unit — the published
+  tarball goes from 217 KB to 295 KB, the five rule sets costing 78 KB between
+  them. `{:error, {:schematron_not_bundled, _}}` is now reachable only for a
+  profile that does not exist.
 
   Two findings from that work, neither visible in the XSD:
 

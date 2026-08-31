@@ -33,16 +33,16 @@ an EN 16931 one wearing a MINIMUM label.
 
 | Profile | Carries | XSD bundled | Schematron bundled |
 |---|---|---|---|
-| `:minimum` | header only; no VAT breakdown, no lines. Seller address only | ✅ | — |
-| `:basic_wl` | full header, no lines ("without lines") | ✅ | — |
-| `:basic` | header and lines, EN 16931-compliant subset | ✅ | — |
+| `:minimum` | header only; no VAT breakdown, no lines. Seller address only | ✅ | ✅ |
+| `:basic_wl` | full header, no lines ("without lines") | ✅ | ✅ |
+| `:basic` | header and lines, EN 16931-compliant subset | ✅ | ✅ |
 | `:en16931` | the norm itself | ✅ | ✅ |
 | `:extended` | the norm plus the French `EXT-FR-FE-*` extensions | ✅ | ✅ |
 
-The five schemas together weigh 80 KB; the five schematrons would add 4 MB, so
-only two ship. `Facturx.validate/2` returns
-`{:error, {:schematron_not_bundled, profile}}` for the other three — pass your
-own compiled XSLT via `:xsl` if you have one.
+Both validators cover all five. `priv/` is 4.4 MB on disk, almost all of it
+schematron, but it compresses to a 295 KB package — the five rule sets cost
+78 KB of that, which is why they all ship. Each profile is checked against its
+own schema *and* its own rule set in CI.
 
 > **MINIMUM is not an invoice.** Its schema has no `ram:ApplicableTradeTax`, so
 > it cannot carry the VAT breakdown (BG-23) that the French mandate requires from
@@ -100,7 +100,7 @@ document.
 ```elixir
 def deps do
   [
-    {:facturx, "~> 0.6"},
+    {:facturx, "~> 0.7"},
     # only if you use Facturx.validate/2:
     {:req, "~> 0.5"}
   ]

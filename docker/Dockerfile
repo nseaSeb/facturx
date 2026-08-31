@@ -44,6 +44,9 @@ FROM ghcr.io/willemvlh/saxon-server:v1.15@sha256:c0959035f4a659584e8a846132cd34d
 # Third-party artefacts — see priv/NOTICE.md at the repository root. Carried into
 # the image because BSD-3-Clause requires the licence text to travel with a
 # redistribution, and UN/CEFACT requires its notice to accompany the schemas.
+COPY priv/schematron/minimum/FACTUR-X_MINIMUM_codedb.xml /opt/facturx/
+COPY priv/schematron/basicwl/FACTUR-X_BASIC-WL_codedb.xml /opt/facturx/
+COPY priv/schematron/basic/FACTUR-X_BASIC_codedb.xml /opt/facturx/
 COPY priv/schematron/en16931/FACTUR-X_EN16931_codedb.xml /opt/facturx/
 COPY priv/schematron/extended/FACTUR-X_EXTENDED_codedb.xml /opt/facturx/
 COPY priv/schematron/LICENSE.akretion.txt /opt/facturx/

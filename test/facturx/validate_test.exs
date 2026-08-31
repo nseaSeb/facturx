@@ -91,10 +91,23 @@ defmodule Facturx.ValidateTest do
 
   describe "validate/2 without a network call" do
     test "refuses a profile whose schematron is not bundled" do
-      # :basic, not :extended — the latter is bundled since the EXTENDED rule set
-      # was added, and asking for it here would reach for a Saxon server.
-      assert Facturx.validate("<xml/>", profile: :basic) ==
-               {:error, {:schematron_not_bundled, :basic}}
+      # All five Factur-X profiles ship a rule set now, so this needs a profile
+      # that does not exist — asking for one that does would reach for a Saxon
+      # server, which this describe block is here to avoid.
+      assert Facturx.validate("<xml/>", profile: :zugferd_1p0) ==
+               {:error, {:schematron_not_bundled, :zugferd_1p0}}
+    end
+
+    test "every profile the library builds has its rule set bundled" do
+      # Reaching :saxon_unreachable means the stylesheet was found and read; the
+      # port is closed, so nothing leaves the machine.
+      for profile <- Facturx.profiles() do
+        result =
+          Facturx.validate("<xml/>", profile: profile, endpoint: "http://127.0.0.1:1/transform")
+
+        assert match?({:error, {:saxon_unreachable, _}}, result),
+               "#{profile}: expected the bundled stylesheet to load, got #{inspect(result)}"
+      end
     end
   end
 
@@ -582,42 +595,66 @@ defmodule Facturx.ValidateTest do
   # types every party alike, so it accepts a MINIMUM buyer carrying an address
   # and a VAT registration; only the schematron says those belong to the seller
   # and to nobody else. Which is exactly how that rule was found.
-  describe "against the schematron of the profiles whose XSL is not bundled" do
-    @describetag :venv_schematron
+  describe "against the bundled schematron of every profile" do
+    @describetag :saxon
     @describetag timeout: 300_000
 
-    @venv Path.expand(
-            "../../.venv-dev/lib/python3.14/site-packages/facturx/xsd_and_schematron",
-            __DIR__
-          )
-
-    @unbundled [
-      {:minimum, "facturx-minimum/Factur-X_1.09_MINIMUM.xsl", "FACTUR-X_MINIMUM_codedb.xml"},
-      {:basic_wl, "facturx-basicwl/Factur-X_1.09_BASICWL.xsl", "FACTUR-X_BASIC-WL_codedb.xml"},
-      {:basic, "facturx-basic/Factur-X_1.09_BASIC.xsl", "FACTUR-X_BASIC_codedb.xml"}
-    ]
-
     setup do
-      url = System.get_env("FACTURX_SAXON_URL") || raise "set FACTURX_SAXON_URL"
+      url =
+        System.get_env("FACTURX_SAXON_URL") || raise "set FACTURX_SAXON_URL to run :saxon tests"
+
       {:ok, endpoint: url}
     end
 
-    for {profile, xsl_rel, codedb} <- @unbundled do
+    for profile <- [:minimum, :basic_wl, :basic, :en16931, :extended] do
       test "a #{profile} document passes the #{profile} business rules", %{endpoint: endpoint} do
-        # The codedb is resolved by the XSLT through document(), which Saxon only
-        # allows with --insecure; the container carries the file, so point the
-        # stylesheet at it rather than at the network.
-        xsl =
-          @venv
-          |> Path.join(unquote(xsl_rel))
-          |> File.read!()
-          |> String.replace(unquote(codedb), "file:///opt/facturx/#{unquote(codedb)}")
+        profile = unquote(profile)
+        {:ok, xml} = Facturx.build(Facturx.TestInvoice.maximal(), profile: profile)
 
-        {:ok, xml} = Facturx.build(Facturx.TestInvoice.maximal(), profile: unquote(profile))
+        # The code-list DB is resolved by the XSLT through document(), which
+        # Saxon only allows with --insecure. The container carries all five, so
+        # point the stylesheet at the local file rather than at the network.
+        opts = [
+          endpoint: endpoint,
+          profile: profile,
+          codedb_url: "file:///opt/facturx/#{codedb(profile)}",
+          receive_timeout: 120_000
+        ]
 
-        assert {:ok, :valid} =
-                 Facturx.validate(xml, endpoint: endpoint, xsl: xsl, receive_timeout: 120_000)
+        assert {:ok, outcome} = Facturx.validate(xml, opts)
+        assert by_rule_id(outcome) == expected(profile)
       end
     end
+
+    # EXTENDED alone comes back with a finding, and it is a real one rather than
+    # a cosmetic. BR-FXEXT-E-08rev reconciles the exempt VAT breakdown (BG-23,
+    # BT-116) against the exempt line amounts — but only over lines whose own
+    # ram:ApplicableTradeTax repeats the exemption reason and code. `Facturx.CII`
+    # emits those at header level only, so the sum matches no line and reads 0
+    # against a 50.00 basis. It is flagged "warning", hence non-blocking, and it
+    # is pinned by rule id rather than waved through: emitting the exemption
+    # reason at line level is what would clear it.
+    defp expected(:extended), do: {:valid_with_warnings, ["BR-FXEXT-E-08rev"]}
+    defp expected(_profile), do: :valid
+
+    # Compare on rule ids: the messages are several hundred characters of XPath
+    # prose, and they change with the upstream rule set without the rule doing so.
+    defp by_rule_id(:valid), do: :valid
+
+    defp by_rule_id({:valid_with_warnings, findings}),
+      do: {:valid_with_warnings, Enum.map(findings, &rule_id/1)}
+
+    defp rule_id(%{message: message}) do
+      case Regex.run(~r/\[([A-Za-z0-9-]+)\]/, message || "") do
+        [_, id] -> id
+        _ -> message
+      end
+    end
+
+    defp codedb(:minimum), do: "FACTUR-X_MINIMUM_codedb.xml"
+    defp codedb(:basic_wl), do: "FACTUR-X_BASIC-WL_codedb.xml"
+    defp codedb(:basic), do: "FACTUR-X_BASIC_codedb.xml"
+    defp codedb(:en16931), do: "FACTUR-X_EN16931_codedb.xml"
+    defp codedb(:extended), do: "FACTUR-X_EXTENDED_codedb.xml"
   end
 end
