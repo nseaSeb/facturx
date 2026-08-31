@@ -42,24 +42,15 @@ defmodule Facturx.Totals do
   # first place the library does arithmetic of its own, so it is the first place
   # that has to say no.
   defp all_finite(inv) do
-    amounts =
-      Enum.flat_map(inv.lines, &line_amounts/1) ++
-        Enum.flat_map(inv.allowances ++ inv.charges, &charge_amounts/1) ++
-        Map.values(inv.totals)
-
-    case Enum.reject(amounts, &finite?/1) do
-      [] -> :ok
-      [bad | _] -> {:error, {:not_a_finite_amount, bad}}
+    inv
+    |> Map.from_struct()
+    |> Invoice.amount_paths()
+    |> Enum.find(fn {_path, value} -> not finite?(value) end)
+    |> case do
+      nil -> :ok
+      {path, value} -> {:error, {:not_a_finite_amount, path, value}}
     end
   end
-
-  defp line_amounts(line) do
-    Enum.flat_map([:net_price, :quantity, :line_total, :vat_rate], &List.wrap(line[&1])) ++
-      Enum.flat_map(line[:allowances] || [], &charge_amounts/1) ++
-      Enum.flat_map(line[:charges] || [], &charge_amounts/1)
-  end
-
-  defp charge_amounts(ac), do: List.wrap(ac[:amount])
 
   defp finite?(%Decimal{coef: coef}), do: is_integer(coef)
   defp finite?(_other), do: true
@@ -97,24 +88,32 @@ defmodule Facturx.Totals do
   # exemption reason and code (BT-120, BT-121) cannot be derived from amounts,
   # and category E is rejected without them (BR-E-10).
   defp breakdown(lines, inv) do
-    groups =
-      lines
-      |> Enum.map(&{vat_key(&1[:vat_category], &1[:vat_rate]), &1[:line_total]})
-      |> Enum.concat(Enum.map(inv.allowances, &{charge_key(&1), Decimal.negate(amount(&1))}))
-      |> Enum.concat(Enum.map(inv.charges, &{charge_key(&1), amount(&1)}))
-      |> Enum.reject(fn {key, _} -> key == nil end)
-      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    entries =
+      Enum.map(lines, &{vat_key(&1), &1[:line_total], &1[:vat_rate]}) ++
+        Enum.map(inv.allowances, &{vat_key(&1), Decimal.negate(amount(&1)), &1[:vat_rate]}) ++
+        Enum.map(inv.charges, &{vat_key(&1), amount(&1), &1[:vat_rate]})
 
-    existing = Map.new(inv.tax_breakdown, &{vat_key(&1[:category], &1[:rate]), &1})
+    existing = Map.new(inv.tax_breakdown, &{tax_key(&1), &1})
 
-    groups
-    |> Enum.map(fn {{category, rate} = key, amounts} ->
+    entries
+    |> Enum.reject(fn {key, _amount, _rate} -> key == nil end)
+    |> Enum.group_by(&elem(&1, 0))
+    |> Enum.map(fn {{category, _normalised} = key, members} ->
       basis =
-        amounts |> Enum.reduce(Decimal.new(0), &Decimal.add(&2, &1 || Decimal.new(0))) |> round2()
+        members
+        |> Enum.map(&elem(&1, 1))
+        |> Enum.reduce(Decimal.new(0), &Decimal.add(&2, &1 || Decimal.new(0)))
+        |> round2()
 
-      existing
-      |> Map.get(key, %{})
-      |> Map.merge(%{
+      declared = Map.get(existing, key, %{})
+
+      # The rate as somebody wrote it, not as the key normalised it: the
+      # caller's own entry first, else the first member's. `20` and `20.00` are
+      # one rate and must land in one entry, but the document should still say
+      # what it was given.
+      rate = declared[:rate] || elem(hd(members), 2)
+
+      Map.merge(declared, %{
         type: "VAT",
         category: category,
         rate: rate,
@@ -131,11 +130,19 @@ defmodule Facturx.Totals do
     basis |> Decimal.mult(rate) |> Decimal.div(100) |> round2()
   end
 
-  defp vat_key(nil, _rate), do: nil
-  defp vat_key(_category, nil), do: nil
-  defp vat_key(category, rate), do: {category, rate}
+  # The key groups on the rate's *value*. `Decimal.new("20")` and
+  # `Decimal.new("20.00")` are numerically equal and different terms, and
+  # `Enum.group_by/3` compares terms — so without normalising, an invoice
+  # carrying both spellings of 20 % produced two `ram:ApplicableTradeTax` entries
+  # for one category and rate, which the schematron rejects. The same slip made a
+  # caller's own breakdown entry unmatchable, silently dropping its exemption
+  # reason and failing BR-E-10.
+  defp vat_key(entry), do: key(entry[:vat_category], entry[:vat_rate])
+  defp tax_key(entry), do: key(entry[:category], entry[:rate])
 
-  defp charge_key(ac), do: vat_key(ac[:vat_category], ac[:vat_rate])
+  defp key(nil, _rate), do: nil
+  defp key(_category, nil), do: nil
+  defp key(category, rate), do: {category, Decimal.normalize(rate)}
 
   # --- document totals -------------------------------------------------------
 
@@ -194,21 +201,21 @@ defmodule Facturx.Totals do
           do: {[:totals, key], given, computed.totals[key]}
 
     lines =
-      for {given, derived} <- Enum.zip(inv.lines, computed.lines),
+      for {{given, derived}, i} <- Enum.with_index(Enum.zip(inv.lines, computed.lines)),
           given[:line_total] != nil,
           not Decimal.equal?(given[:line_total], derived[:line_total]),
-          do: {[:lines, given[:id], :line_total], given[:line_total], derived[:line_total]}
+          do: {[:lines, i, :line_total], given[:line_total], derived[:line_total]}
 
     taxes =
       for given <- inv.tax_breakdown,
-          key = vat_key(given[:category], given[:rate]),
+          key = tax_key(given),
           key != nil,
-          match = Enum.find(computed.tax_breakdown, &(vat_key(&1[:category], &1[:rate]) == key)),
+          match = Enum.find(computed.tax_breakdown, &(tax_key(&1) == key)),
           match != nil,
           field <- [:basis, :calculated],
           given[field] != nil,
           not Decimal.equal?(given[field], match[field]),
-          do: {[:tax_breakdown, key, field], given[field], match[field]}
+          do: {[:tax_breakdown, elem(key, 0), field], given[field], match[field]}
 
     totals ++ lines ++ taxes
   end

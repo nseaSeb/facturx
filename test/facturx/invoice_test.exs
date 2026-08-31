@@ -3,6 +3,11 @@ defmodule Facturx.InvoiceTest do
 
   alias Facturx.{Invoice, TestInvoice}
 
+  # The `iex>` block in `new/1` is otherwise decoration: it drifted from the code
+  # once already, listing six errors where seven are returned and in the wrong
+  # order.
+  doctest Facturx.Invoice
+
   defp d(s), do: Decimal.new(s)
 
   defp minimal_attrs(extra \\ %{}) do
@@ -51,7 +56,15 @@ defmodule Facturx.InvoiceTest do
       attrs =
         minimal_attrs(%{
           totals: %{grand_total: "314.00", prepaid: 100},
-          lines: [%{net_price: "100.00", quantity: 2, allowances: [%{amount: "5.00"}]}],
+          lines: [
+            %{
+              net_price: "100.00",
+              quantity: 2,
+              vat_category: "S",
+              vat_rate: "20.00",
+              allowances: [%{amount: "5.00"}]
+            }
+          ],
           charges: [%{amount: 30}],
           tax_breakdown: [%{rate: "20.00", basis: "220.00"}]
         })
@@ -72,7 +85,12 @@ defmodule Facturx.InvoiceTest do
     end
 
     test "floats are refused, and the path says which one" do
-      attrs = minimal_attrs(%{lines: [%{net_price: d("1")}, %{net_price: 1.5}]})
+      vat = %{vat_category: "S", vat_rate: d("20.00")}
+
+      attrs =
+        minimal_attrs(%{
+          lines: [Map.put(vat, :net_price, d("1")), Map.put(vat, :net_price, 1.5)]
+        })
 
       assert {:error, [{[:lines, 1, :net_price], :float}]} = Invoice.new(attrs)
     end
@@ -91,6 +109,82 @@ defmodule Facturx.InvoiceTest do
       attrs = minimal_attrs(%{totals: %{grand_total: "314,00"}})
 
       assert {:error, [{[:totals, :grand_total], :not_a_number}]} = Invoice.new(attrs)
+    end
+  end
+
+  describe "totals/2 grouping" do
+    # `Decimal.new("20")` and `Decimal.new("20.00")` are numerically equal and
+    # different terms. Grouping on the term produced two ram:ApplicableTradeTax
+    # entries for one category and rate, which the schematron rejects.
+    test "two spellings of the same rate make one breakdown entry" do
+      inv = priced([{"50.00", "S", "20"}, {"100.00", "S", "20.00"}])
+
+      assert {:ok, out} = Invoice.totals(inv)
+      assert [entry] = out.tax_breakdown
+      assert Decimal.equal?(entry[:basis], d("150.00"))
+      assert Decimal.equal?(entry[:calculated], d("30.00"))
+    end
+
+    test "a supplied entry is matched whatever scale its rate is written at" do
+      inv =
+        %{
+          priced([{"50.00", "E", "0"}])
+          | tax_breakdown: [
+              %{
+                type: "VAT",
+                category: "E",
+                rate: d("0.00"),
+                exemption_reason: "Exonération article 261-4-4 du CGI",
+                exemption_reason_code: "VATEX-EU-132-1I"
+              }
+            ]
+        }
+
+      assert {:ok, out} = Invoice.totals(inv)
+      assert [entry] = out.tax_breakdown
+      # BR-E-10 rejects an exempt breakdown without one, and no amount implies it.
+      assert entry[:exemption_reason_code] == "VATEX-EU-132-1I"
+      assert Decimal.equal?(entry[:basis], d("50.00"))
+    end
+
+    test "the rate is emitted as it was written, not as the key normalised it" do
+      inv = priced([{"50.00", "S", "20.00"}])
+
+      assert {:ok, out} = Invoice.totals(inv)
+      assert Decimal.to_string(hd(out.tax_breakdown)[:rate], :normal) == "20.00"
+    end
+  end
+
+  describe "amounts that cannot be added" do
+    # The finiteness gate walks Invoice.amount_paths/1, the same list new/1
+    # coerces and CII.build/2 refuses on. Three separate lists would have drifted,
+    # and the field they all forgot would be the one carrying the NaN.
+    test "a NaN anywhere an amount is expected stops totals/2" do
+      {nan, ""} = Decimal.parse("NaN")
+
+      cases = [
+        {"line net price", &put_in(&1.lines, [Map.put(hd(&1.lines), :net_price, nan)])},
+        {"line gross price", &put_in(&1.lines, [Map.put(hd(&1.lines), :gross_price, nan)])},
+        {"charge basis",
+         &%{&1 | charges: [%{amount: d("1.00"), basis_amount: nan, reason: "x"}]}},
+        {"breakdown basis",
+         &%{&1 | tax_breakdown: [%{category: "S", rate: d("20.00"), basis: nan}]}},
+        {"a total", &put_in(&1.totals, %{prepaid: nan})}
+      ]
+
+      for {label, mutate} <- cases do
+        hostile = mutate.(priced([{"50.00", "S", "20.00"}]))
+
+        assert {:error, {:not_a_finite_amount, _path, _value}} = Invoice.totals(hostile),
+               "#{label} was accepted"
+      end
+    end
+
+    test "and stops build/2, which would otherwise emit it" do
+      {nan, ""} = Decimal.parse("NaN")
+      hostile = put_in(priced([{"50.00", "S", "20.00"}]).totals, %{grand_total: nan})
+
+      assert {:error, {:not_a_finite_amount, [:totals, :grand_total], _}} = Facturx.build(hostile)
     end
   end
 
@@ -167,7 +261,7 @@ defmodule Facturx.InvoiceTest do
       wrong = %{inv | lines: List.update_at(inv.lines, 0, &Map.put(&1, :line_total, d("1.00")))}
 
       assert {:error, {:totals_mismatch, diffs}} = Invoice.totals(wrong)
-      assert Enum.any?(diffs, fn {path, _, _} -> path == [:lines, "1", :line_total] end)
+      assert Enum.any?(diffs, fn {path, _, _} -> path == [:lines, 0, :line_total] end)
     end
 
     test "refuses to add a non-finite amount rather than propagating it" do
@@ -175,7 +269,8 @@ defmodule Facturx.InvoiceTest do
       inv = stripped(TestInvoice.maximal())
       hostile = %{inv | lines: List.update_at(inv.lines, 0, &Map.put(&1, :net_price, nan))}
 
-      assert {:error, {:not_a_finite_amount, _}} = Invoice.totals(hostile)
+      assert {:error, {:not_a_finite_amount, [:lines, 0, :net_price], _}} =
+               Invoice.totals(hostile)
     end
 
     test "BT-113 and BT-114 are read, never derived" do
@@ -211,6 +306,34 @@ defmodule Facturx.InvoiceTest do
       refute Map.has_key?(computed.totals, :charge_total)
       assert Decimal.equal?(computed.totals[:grand_total], d("12.00"))
     end
+  end
+
+  # An invoice reduced to its prices: `{net_price, vat_category, vat_rate}` per
+  # line, and nothing derived.
+  defp priced(specs) do
+    lines =
+      for {{price, category, rate}, i} <- Enum.with_index(specs, 1) do
+        %{
+          id: "#{i}",
+          name: "Ligne #{i}",
+          net_price: d(price),
+          quantity: d("1"),
+          unit: "C62",
+          vat_category: category,
+          vat_rate: d(rate)
+        }
+      end
+
+    %{
+      TestInvoice.maximal()
+      | tax_currency: nil,
+        allowances: [],
+        charges: [],
+        preceding_invoices: [],
+        lines: lines,
+        tax_breakdown: [],
+        totals: %{}
+    }
   end
 
   # The reference invoice with every derived figure removed, so `totals/2` has to

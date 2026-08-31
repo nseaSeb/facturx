@@ -322,6 +322,19 @@ defmodule Facturx.PdfRoundtripTest do
       assert Facturx.extract(pdf) == {:error, :encrypted_pdf_unsupported}
     end
 
+    test "a file decrypted by an incremental update is readable again" do
+      # Only the *last* trailer is the document's. An earlier one belongs to a
+      # revision this file has superseded, so an /Encrypt left behind there no
+      # longer applies — and reading it would refuse a file that is fine.
+      {:ok, facturx} = Facturx.generate(TestPDF.base(), @xml)
+
+      once_encrypted =
+        encrypted(facturx) <> "trailer\n<< /Size 12 /Root 1 0 R >>\nstartxref\n0\n%%EOF\n"
+
+      refute Facturx.PDF.encrypted?(once_encrypted)
+      assert {:ok, %{xml: @xml}} = Facturx.extract(once_encrypted)
+    end
+
     test "refuses an encrypted PDF that does carry a reachable-looking attachment" do
       # The case that matters, and the one a check placed after the pipeline
       # would miss entirely: encryption covers strings and stream *data*, never

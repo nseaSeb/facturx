@@ -36,6 +36,13 @@ defmodule Facturx.Extract do
   @spec extract(binary()) :: {:ok, result()} | {:error, term()}
   def extract(pdf) when is_binary(pdf) do
     if Facturx.PDF.encrypted?(pdf), do: {:error, :encrypted_pdf_unsupported}, else: read(pdf)
+  rescue
+    # The guard above reads the trailer, so it is inside the contract too: this
+    # function promises `{:error, term()}` for any binary, and the promise cannot
+    # start one call later. Same narrow list as `Facturx.Embed.embed/3` — these
+    # three are what slicing and matching on a malformed binary raise, and a
+    # FunctionClauseError from a defect here is a bug to see, not an input error.
+    e in [ArgumentError, MatchError, ErlangError] -> {:error, e}
   end
 
   # Only the strings and the stream *data* of an encrypted PDF are encrypted:
@@ -73,14 +80,6 @@ defmodule Facturx.Extract do
       other ->
         other
     end
-  rescue
-    # Same contract as `Facturx.Embed.embed/3`: caller-supplied bytes must not
-    # cross the API boundary as an exception. Deliberately narrow — these three
-    # are what slicing and matching on a malformed binary raise. A
-    # `FunctionClauseError` or an `UndefinedFunctionError` is a bug in this
-    # library, and is left to crash rather than served to the caller as though
-    # their file were at fault.
-    e in [ArgumentError, MatchError, ErlangError] -> {:error, e}
   end
 
   defp object_streams?(pdf) do

@@ -95,12 +95,13 @@ defmodule Facturx.PDF do
   Neither module can read an encrypted file, and neither used to notice: the
   outcome was a failed inflate or meaningless bytes rather than an error.
 
-  Only the trailer dictionaries are searched, `/Encrypt` being meaningful there
-  and nowhere else. Scanning the whole file would refuse documents that merely
-  contain those bytes — an uncompressed XMP packet quoting the PDF spec, a
-  content stream, a superseded trailer left behind by a decrypt-then-update.
-  Every trailer is checked rather than only the last: an incremental update adds
-  a trailer that inherits what the previous one declared.
+  Only the **last** trailer dictionary is read, and for two reasons. `/Encrypt`
+  is meaningful in a trailer and nowhere else, so scanning the whole file would
+  refuse documents that merely contain those bytes — an uncompressed XMP packet
+  quoting the PDF spec, a content stream. And the last trailer is the document's:
+  earlier ones belong to revisions this file has superseded, so a file decrypted
+  by an incremental update still carries an `/Encrypt` trailer that no longer
+  applies, and reading it would refuse a file that is perfectly readable.
 
   A file whose cross-reference is a stream has no `trailer` keyword at all and
   carries `/Encrypt` in the XRef stream dictionary instead. That shape is out of
@@ -108,14 +109,16 @@ defmodule Facturx.PDF do
   """
   @spec encrypted?(binary()) :: boolean()
   def encrypted?(pdf) do
-    pdf
-    |> :binary.matches("trailer")
-    |> Enum.any?(fn {pos, _} ->
-      case balanced_dict(pdf, pos) do
-        {:ok, dict} -> Regex.match?(@encrypt, dict)
-        {:error, _} -> false
-      end
-    end)
+    case :binary.matches(pdf, "trailer") |> List.last() do
+      nil ->
+        false
+
+      {pos, _} ->
+        case balanced_dict(pdf, pos) do
+          {:ok, dict} -> Regex.match?(@encrypt, dict)
+          {:error, _} -> false
+        end
+    end
   end
 
   @doc "`stream` must be followed by CRLF or LF; the data begins after it."

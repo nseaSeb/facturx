@@ -376,10 +376,18 @@ defmodule Facturx.Invoice do
   Returns **every** problem it found, not the first:
 
       iex> Facturx.Invoice.new(%{currency: "EURO", lines: [%{net_price: 1.5}]})
-      {:error, [{[:number], :required}, {[:issue_date], :required},
-                {[:seller], :required}, {[:buyer], :required},
-                {[:currency], :not_a_currency_code},
-                {[:lines, 0, :net_price], :float}]}
+      {:error,
+       [
+         {[:buyer], :required},
+         {[:currency], :not_a_currency_code},
+         {[:issue_date], :required},
+         {[:lines, 0, :net_price], :float},
+         {[:lines, 0, :vat_category], :required},
+         {[:lines, 0, :vat_rate], :required},
+         {[:number], :required},
+         {[:seller], :required},
+         {[:type_code], :required}
+       ]}
 
   ## Amounts
 
@@ -454,7 +462,20 @@ defmodule Facturx.Invoice do
       party(attrs, :buyer) ++
       currency(attrs) ++
       date(attrs, :issue_date) ++
-      date(attrs, :due_date)
+      date(attrs, :due_date) ++
+      line_vat(attrs)
+  end
+
+  # BT-151 and BT-152 are required on every line (BR-CO-4), and without them a
+  # line cannot be placed in any VAT breakdown group — it would count towards the
+  # total without contributing any VAT, which is a wrong invoice rather than an
+  # incomplete one.
+  defp line_vat(attrs) do
+    for {line, i} <- Enum.with_index(Map.get(attrs, :lines) || []),
+        is_map(line),
+        {field, key} <- [{:vat_category, :vat_category}, {:vat_rate, :vat_rate}],
+        blank?(line[key]),
+        do: {[:lines, i, field], :required}
   end
 
   defp party(attrs, key) do
@@ -500,7 +521,7 @@ defmodule Facturx.Invoice do
   # Both walks enumerate the same `paths/1`, which is what stops them disagreeing
   # about which fields are amounts.
   defp coerce_amounts(attrs) do
-    Enum.flat_map(paths(attrs), fn {path, value} ->
+    Enum.flat_map(amount_paths(attrs), fn {path, value} ->
       case to_decimal(value) do
         {:ok, _} -> []
         {:error, reason} -> [{path, reason}]
@@ -509,7 +530,7 @@ defmodule Facturx.Invoice do
   end
 
   defp coerced(attrs) do
-    Enum.reduce(paths(attrs), attrs, fn {path, value}, acc ->
+    Enum.reduce(amount_paths(attrs), attrs, fn {path, value}, acc ->
       case to_decimal(value) do
         {:ok, d} -> put_in_path(acc, path, d)
         {:error, _} -> acc
@@ -517,7 +538,14 @@ defmodule Facturx.Invoice do
     end)
   end
 
-  defp paths(attrs) do
+  @doc false
+  # Every path at which an amount is expected, as `{path, value}`. Public to the
+  # library because three places need the same list — `new/1` to coerce,
+  # `Facturx.Totals` to refuse what it cannot add, and `Facturx.CII.build/2` to
+  # refuse what it cannot emit. Three copies would drift, and the field they all
+  # forgot would be the one carrying the NaN.
+  @spec amount_paths(map()) :: [{[atom() | non_neg_integer()], term()}]
+  def amount_paths(attrs) do
     totals = for k <- @totals_amounts, v = get_in_map(attrs, [:totals, k]), do: {[:totals, k], v}
 
     lines =

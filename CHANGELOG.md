@@ -73,9 +73,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   anything here can see it. Accepting it would record the drift and call it
   validated.
 
+  `new/1` also requires `:vat_category` and `:vat_rate` on every line (BR-CO-4).
+  Without them a line cannot be placed in any VAT breakdown group: it would count
+  towards the invoice total while contributing no VAT, which is a wrong invoice
+  rather than an incomplete one.
+
   Both are optional — `build/2` and `generate/3` still take a bare struct or map.
   `docs/adr/0001-perimetre-et-architecture.md` records why the original "no
   struct-level validation" decision was revised.
+
+- `Facturx.CII.build/2` refuses a non-finite amount rather than emitting
+  `<ram:GrandTotalAmount>NaN</ram:GrandTotalAmount>`. The list of fields that
+  hold an amount is now shared by `new/1`, the totals and the builder, so the
+  field none of them knew about cannot be the one carrying the NaN.
 
 - **The MINIMUM, BASIC WL and BASIC profiles are real.** `Facturx.CII.build/2`
   used to emit the same document whatever the profile and change only the

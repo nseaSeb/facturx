@@ -88,7 +88,8 @@ defmodule Facturx.CII do
     profile = Keyword.get(opts, :profile, inv.profile || :en16931)
     check_bp? = validate_bp?(opts)
 
-    with :ok <- check_business_process(inv.business_process, check_bp?),
+    with :ok <- check_finite_amounts(inv),
+         :ok <- check_business_process(inv.business_process, check_bp?),
          :ok <- check_final_invoice_type(inv, check_bp?),
          :ok <- check_vat_point_dates(inv, flag?(opts, :validate_vat_point_date, true)),
          :ok <- check_tax_currency(inv) do
@@ -105,6 +106,26 @@ defmodule Facturx.CII do
   rescue
     e -> {:error, e}
   end
+
+  # `Decimal.parse/1` accepts "NaN" and "Infinity", and `parse/1` refuses them —
+  # but a struct can be built by hand, or arrive from arithmetic done elsewhere.
+  # Emitting one would produce `<ram:GrandTotalAmount>NaN</ram:GrandTotalAmount>`,
+  # which is not an amount and not a document. The path list is shared with
+  # `Facturx.Invoice.new/1` and `Facturx.Totals`, so a field none of them knows
+  # about is not a field one of them silently skips.
+  defp check_finite_amounts(inv) do
+    inv
+    |> Map.from_struct()
+    |> Invoice.amount_paths()
+    |> Enum.find(fn {_path, value} -> not finite?(value) end)
+    |> case do
+      nil -> :ok
+      {path, value} -> {:error, {:not_a_finite_amount, path, value}}
+    end
+  end
+
+  defp finite?(%Decimal{coef: coef}), do: is_integer(coef)
+  defp finite?(_other), do: true
 
   defp validate_bp?(opts), do: flag?(opts, :validate_business_process, false)
 

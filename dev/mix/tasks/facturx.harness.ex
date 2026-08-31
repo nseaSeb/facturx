@@ -72,9 +72,7 @@ defmodule Mix.Tasks.Facturx.Harness do
     File.rm(paths.ref)
 
     {out, status} =
-      System.cmd(paths.facturx_pdfgen, [paths.base, paths.cii, paths.ref],
-        stderr_to_stdout: true
-      )
+      System.cmd(paths.facturx_pdfgen, [paths.base, paths.cii, paths.ref], stderr_to_stdout: true)
 
     [
       # The CLI is chatty, and among other things tries a Saxon server on
@@ -173,7 +171,9 @@ defmodule Mix.Tasks.Facturx.Harness do
     width = results |> Enum.map(&String.length(&1.label)) |> Enum.max()
 
     for %{label: label, ok: ok?, detail: detail} <- results do
-      Mix.shell().info("#{if ok?, do: "ok  ", else: "FAIL"}  #{String.pad_trailing(label, width)}  #{detail}")
+      Mix.shell().info(
+        "#{if ok?, do: "ok  ", else: "FAIL"}  #{String.pad_trailing(label, width)}  #{detail}"
+      )
     end
   end
 
