@@ -54,7 +54,10 @@ defmodule Facturx.MixProject do
       {:saxy, "~> 1.6"},
 
       # Exact decimal arithmetic for monetary amounts (prices, VAT, totals).
-      {:decimal, "~> 2.0"},
+      # 3.0 is the floor, not a preference: every 2.x is affected by
+      # CVE-2026-32686, and `parse/1` hands amounts straight from an untrusted
+      # invoice to the caller. See the note in Facturx.CII.
+      {:decimal, "~> 3.0"},
 
       # Optional: only needed by Facturx.Validate (Schematron over HTTP).
       # Callers that don't validate don't pull an HTTP client.

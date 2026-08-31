@@ -101,6 +101,7 @@ document.
 def deps do
   [
     {:facturx, "~> 0.7"},
+    # decimal ~> 3.0 is required: every 2.x is affected by CVE-2026-32686.
     # only if you use Facturx.validate/2:
     {:req, "~> 0.5"}
   ]

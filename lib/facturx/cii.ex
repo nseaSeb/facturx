@@ -1138,9 +1138,15 @@ defmodule Facturx.CII do
   # Total: never raises on malformed content (parse/1 must honour {:ok|:error}).
   defp num(nil), do: nil
 
+  # `is_integer(coef)` is the finiteness test: `Decimal.parse/1` accepts "NaN",
+  # "Infinity" and "-Infinity", representing them as a `:NaN` or `:inf`
+  # coefficient. A monetary amount is neither, and a document arriving from
+  # elsewhere should not be able to put one into an `Invoice` — it would
+  # propagate through the caller's arithmetic and come back out of `build/2` as
+  # `<ram:GrandTotalAmount>NaN</ram:GrandTotalAmount>`.
   defp num(str) do
     case Decimal.parse(str) do
-      {d, ""} -> d
+      {%Decimal{coef: coef} = d, ""} when is_integer(coef) -> d
       _ -> nil
     end
   end

@@ -5,6 +5,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [0.7.0] - 2026-08-31
 
+### Security
+- **`:decimal` moves to `~> 3.0`, a breaking dependency change.** Every 2.x is
+  affected by CVE-2026-32686 (GHSA-rhv4-8758-jx7v): the exponent of a parsed
+  decimal was unbounded, so `Decimal.parse("1e10000000")` succeeded and the
+  first arithmetic on the result — comparing two totals, say — allocated a
+  ten-million-digit coefficient and could exhaust the BEAM's memory on a single
+  request. `Facturx.CII.parse/1` takes invoices from third parties and handed
+  such a value straight back, so this was reachable through the public API on
+  untrusted input. decimal 3 caps the exponent at 6144, the IEEE 754 decimal128
+  Emax. Found by `mix hex.audit`, on its first run in CI.
+
+  A wider requirement (`~> 2.0 or ~> 3.0`) was rejected: the resolver would keep
+  picking 2.x in existing projects, which is precisely the case that needs
+  fixing.
+
+- **A non-finite amount no longer reaches an `Invoice`.** `Decimal.parse/1`
+  accepts `"NaN"` and `"Infinity"`, and a hostile document could put either in a
+  monetary field — where it would propagate through the caller's arithmetic and
+  come back out of `build/2` as `<ram:GrandTotalAmount>NaN</ram:GrandTotalAmount>`.
+  `parse/1` now reads those as absent, like any other malformed amount.
+
 ### Fixed
 - **A stream is no longer cut short by its own contents.** `/Length` is now
   authoritative in both `Facturx.Embed` and `Facturx.Extract`; `endstream` and

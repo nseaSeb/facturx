@@ -1181,6 +1181,50 @@ defmodule Facturx.CIITest do
 
   # Exercises the real reference document (gitignored, personal data). Asserts
   # only structural facts — no personal data is written into this test file.
+  describe "parse/1 on hostile amounts" do
+    # CVE-2026-32686: decimal 2.x stored an unbounded exponent, so
+    # `Decimal.parse("1e10000000")` succeeded and any later arithmetic —
+    # comparing totals, the obvious thing for a caller to do — allocated a
+    # ten-million-digit coefficient and could OOM the BEAM. `parse/1` takes
+    # third-party invoices, so it was a one-request denial of service reachable
+    # through the public API. The floor on decimal is `~> 3.0` for that reason;
+    # this pins the outcome rather than the dependency.
+    test "an unbounded exponent does not come back as a usable amount" do
+      {:ok, xml} = Facturx.CII.build(Facturx.TestInvoice.maximal(), profile: :en16931)
+
+      hostile =
+        String.replace(
+          xml,
+          "<ram:GrandTotalAmount>314.00</ram:GrandTotalAmount>",
+          "<ram:GrandTotalAmount>1e10000000</ram:GrandTotalAmount>"
+        )
+
+      assert {:ok, inv} = Facturx.CII.parse(hostile)
+      assert inv.totals[:grand_total] == nil
+    end
+
+    # The bound is not "no exponents": decimal 3 caps the exponent at 6144, the
+    # IEEE 754 decimal128 Emax, so `1e6144` still parses and `1e6145` does not.
+    # An invoice amount lives nowhere near either.
+    test "malformed amounts come back absent rather than half-read" do
+      {:ok, xml} = Facturx.CII.build(Facturx.TestInvoice.maximal(), profile: :en16931)
+
+      for bad <- ["1e6145", "NaN", "Infinity", "314.00.00", "", "314,00", "0x1f"] do
+        hostile =
+          String.replace(
+            xml,
+            "<ram:GrandTotalAmount>314.00</ram:GrandTotalAmount>",
+            "<ram:GrandTotalAmount>#{bad}</ram:GrandTotalAmount>"
+          )
+
+        assert {:ok, inv} = Facturx.CII.parse(hostile)
+
+        assert inv.totals[:grand_total] == nil,
+               "#{inspect(bad)} came back as #{inspect(inv.totals[:grand_total])}"
+      end
+    end
+  end
+
   describe "against the reference fixture" do
     @describetag :local
     @golden Path.expand("../fixtures/local/harness/cii.xml", __DIR__)
