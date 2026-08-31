@@ -100,6 +100,13 @@ jobs:
 
   coverage:
     runs-on: ubuntu-latest
+    # coveralls.github needs a token that can post. On a pull request from a
+    # fork the GITHUB_TOKEN is read-only, so the upload fails and turns CI red
+    # for a contributor whose change is fine — CONTRIBUTING.md invites exactly
+    # those pull requests.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     env:
       MIX_ENV: test
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

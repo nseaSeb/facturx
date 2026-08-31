@@ -35,6 +35,16 @@ defmodule Facturx.Extract do
   @doc "Extract the embedded CII XML and metadata from `pdf`."
   @spec extract(binary()) :: {:ok, result()} | {:error, term()}
   def extract(pdf) when is_binary(pdf) do
+    if Facturx.PDF.encrypted?(pdf), do: {:error, :encrypted_pdf_unsupported}, else: read(pdf)
+  end
+
+  # Only the strings and the stream *data* of an encrypted PDF are encrypted:
+  # the object structure, `/EF`, `/AFRelationship` and the object numbers are
+  # all still plaintext. So the pipeline below runs to completion on such a file
+  # and hands back bytes that decrypt to nothing — which is exactly why the
+  # check above is a gate and not, as it first was, a branch on the
+  # `:no_embedded_file` result.
+  defp read(pdf) do
     objects = index_objects(pdf)
 
     result =
@@ -53,8 +63,9 @@ defmodule Facturx.Extract do
          }}
       end
 
-    # If we found nothing but the PDF uses object/xref streams, say so plainly
-    # rather than claiming there is no attachment (it may just be out of reach).
+    # Having found nothing is not the same as there being nothing: a PDF using
+    # object/xref streams may well carry an attachment this module cannot reach.
+    # Say which it is rather than claim the PDF has none.
     case result do
       {:error, :no_embedded_file} ->
         if object_streams?(pdf), do: {:error, :object_streams_unsupported}, else: result
@@ -62,16 +73,19 @@ defmodule Facturx.Extract do
       other ->
         other
     end
+  rescue
+    # Same contract as `Facturx.Embed.embed/3`: caller-supplied bytes must not
+    # cross the API boundary as an exception. Deliberately narrow — these three
+    # are what slicing and matching on a malformed binary raise. A
+    # `FunctionClauseError` or an `UndefinedFunctionError` is a bug in this
+    # library, and is left to crash rather than served to the caller as though
+    # their file were at fault.
+    e in [ArgumentError, MatchError, ErlangError] -> {:error, e}
   end
 
   defp object_streams?(pdf) do
     String.contains?(pdf, "/ObjStm") or Regex.match?(~r|/Type\s*/XRef|, pdf)
   end
-
-  # A direct `/Length N`, never the indirect `/Length N G R` form. The `\b`
-  # matters: without it the engine backtracks into the digits when the lookahead
-  # fires, so `/Length 120 0 R` captures "12" instead of failing.
-  @direct_length ~r{/Length\s+(\d+)\b(?!\s*\d+\s+R)}
 
   # --- object index (classic xref, brute-force recovery) -------------------
 
@@ -89,6 +103,11 @@ defmodule Facturx.Extract do
     end)
   end
 
+  # The index maps each object to `{body, :delimited | :truncated}`. The flag
+  # matters to `scan_to_endstream/3`: taking the *last* `endstream` is right
+  # within a delimited object, and wrong for one that runs to EOF, where it
+  # would slice the whole tail of the file.
+
   # Bytes from `body_start` to the object's `endobj`.
   #
   # Not simply the first `endobj`: a compressed stream is arbitrary bytes, and
@@ -101,14 +120,14 @@ defmodule Facturx.Extract do
 
     case :binary.match(rest, "endobj") do
       :nomatch ->
-        rest
+        {rest, :truncated}
 
       {naive_end, _} ->
         from = stream_data_end(rest, naive_end)
 
         case :binary.match(rest, "endobj", scope: {from, byte_size(rest) - from}) do
-          {e, _} -> binary_part(rest, 0, e)
-          :nomatch -> binary_part(rest, 0, naive_end)
+          {e, _} -> {binary_part(rest, 0, e), :delimited}
+          :nomatch -> {binary_part(rest, 0, naive_end), :delimited}
         end
     end
   end
@@ -123,8 +142,8 @@ defmodule Facturx.Extract do
   # making the index quadratic in the file size.
   defp stream_data_end(obj, naive_end) do
     with {s, _} <- :binary.match(obj, "stream", scope: {0, naive_end}),
-         data_start = skip_eol(obj, s + 6),
-         {:ok, len} <- declared_length(binary_part(obj, 0, s), obj, data_start) do
+         data_start = Facturx.PDF.skip_eol(obj, s + 6),
+         {:ok, len} <- Facturx.PDF.stream_length(binary_part(obj, 0, s), obj, data_start) do
       data_start + len
     else
       _ -> 0
@@ -134,7 +153,7 @@ defmodule Facturx.Extract do
   defp resolve(objects, {num, gen}) do
     case Map.get(objects, {num, gen}) || Map.get(objects, {num, 0}) do
       nil -> {:error, {:missing_object, num, gen}}
-      body -> {:ok, body}
+      entry -> {:ok, entry}
     end
   end
 
@@ -146,6 +165,7 @@ defmodule Facturx.Extract do
     candidates =
       objects
       |> Map.values()
+      |> Enum.map(&elem(&1, 0))
       |> Enum.filter(&(String.contains?(&1, "/EF") and String.contains?(&1, "/AFRelationship")))
 
     preferred =
@@ -185,78 +205,41 @@ defmodule Facturx.Extract do
 
   # --- stream decoding ------------------------------------------------------
 
-  defp stream_bytes(obj) do
-    with {s, _} <- :binary.match(obj, "stream"),
-         data_start = skip_eol(obj, s + 6),
-         {:ok, len} <- declared_length(binary_part(obj, 0, s), obj, data_start) do
-      {:ok, binary_part(obj, data_start, len)}
-    else
-      {:error, :no_length} -> scan_to_endstream(obj)
-      _ -> {:error, :no_stream}
+  defp stream_bytes({obj, delimited}) do
+    case :binary.match(obj, "stream") do
+      :nomatch ->
+        {:error, :no_stream}
+
+      {s, _} ->
+        data_start = Facturx.PDF.skip_eol(obj, s + 6)
+
+        case Facturx.PDF.stream_length(binary_part(obj, 0, s), obj, data_start) do
+          {:ok, len} -> {:ok, binary_part(obj, data_start, len)}
+          :error -> scan_to_endstream(obj, data_start, delimited)
+        end
     end
   end
-
-  # `/Length` is where the stream actually stops, and it is authoritative:
-  # `endstream` cannot be located by scanning, because deflate output contains
-  # those bytes often enough to matter. Guessing at the EOL that precedes it
-  # also eats a real byte as soon as the data ends with CR or LF — for a deflate
-  # stream that is roughly one document in 256, the last byte being the low byte
-  # of the adler32, and what comes out no longer inflates.
-  #
-  # The length is still checked against `endstream` before being used: producers
-  # do get it wrong, and a wrong length would silently truncate where the scan
-  # would have worked.
-  defp declared_length(dict, obj, data_start) do
-    with [_, n] <- Regex.run(@direct_length, dict),
-         len = String.to_integer(n),
-         true <- data_start + len <= byte_size(obj),
-         tail = binary_part(obj, data_start + len, byte_size(obj) - data_start - len),
-         true <- eol_then_endstream?(tail) do
-      {:ok, len}
-    else
-      _ -> {:error, :no_length}
-    end
-  end
-
-  defp eol_then_endstream?(<<"\r\n", rest::binary>>), do: String.starts_with?(rest, "endstream")
-
-  defp eol_then_endstream?(<<c, rest::binary>>) when c in [?\r, ?\n],
-    do: String.starts_with?(rest, "endstream")
-
-  defp eol_then_endstream?(rest), do: String.starts_with?(rest, "endstream")
 
   # No usable `/Length`: fall back to scanning, and take the **last**
   # `endstream` of the object rather than the first — an earlier one is data.
-  defp scan_to_endstream(obj) do
-    with {s, _} <- :binary.match(obj, "stream"),
-         data_start = skip_eol(obj, s + 6),
-         scope = {data_start, byte_size(obj) - data_start},
-         {e, _} <- obj |> :binary.matches("endstream", scope: scope) |> List.last() do
-      {:ok, binary_part(obj, data_start, strip_trailing_eol(obj, data_start, e) - data_start)}
-    else
-      _ -> {:error, :no_stream}
+  #
+  # Only within a *delimited* object, though. A truncated one runs to the end of
+  # the file, so its "last endstream" is the file's, and the slice would span
+  # every object after this one — megabytes copied to fail at inflate. There,
+  # the first occurrence is the only bounded guess left.
+  defp scan_to_endstream(obj, data_start, delimited) do
+    scope = {data_start, byte_size(obj) - data_start}
+    matches = :binary.matches(obj, "endstream", scope: scope)
+
+    case if(delimited == :delimited, do: List.last(matches), else: List.first(matches)) do
+      nil ->
+        {:error, :no_stream}
+
+      {e, _} ->
+        stop = Facturx.PDF.strip_trailing_eol(obj, data_start, e)
+        {:ok, binary_part(obj, data_start, stop - data_start)}
     end
   end
-
-  # `stream` must be followed by CRLF or LF; data begins after it.
-  defp skip_eol(bin, pos) do
-    case bin do
-      <<_::binary-size(pos), "\r\n", _::binary>> -> pos + 2
-      <<_::binary-size(pos), "\n", _::binary>> -> pos + 1
-      <<_::binary-size(pos), "\r", _::binary>> -> pos + 1
-      _ -> pos
-    end
-  end
-
-  defp strip_trailing_eol(bin, start, e) when e - 2 >= start do
-    case binary_part(bin, e - 2, 2) do
-      "\r\n" -> e - 2
-      <<_, c>> when c in [?\r, ?\n] -> e - 1
-      _ -> e
-    end
-  end
-
-  defp strip_trailing_eol(_bin, _start, e), do: e
 
   # PDF FlateDecode is zlib (RFC 1950); fall back to raw deflate if needed.
   defp inflate(data) do

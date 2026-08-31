@@ -39,14 +39,27 @@ defmodule Facturx.Embed do
     filename = Keyword.get(opts, :filename, @default_filename)
     profile = Keyword.get(opts, :profile, :en16931)
 
-    with :ok <- ensure_classic_xref(pdf),
+    with :ok <- ensure_not_encrypted(pdf),
+         :ok <- ensure_classic_xref(pdf),
          {:ok, ctx} <- parse_base(pdf),
          :ok <- check_pdfa_level(ctx.part) do
       build(pdf, xml, ctx, profile, filename)
     end
+  rescue
+    # The input is a caller-supplied binary, so every malformed shape it can
+    # take is an input error and owed an `{:error, _}` — the contract this spec
+    # states. The known ones are refused by name above; this catches the rest
+    # rather than letting an exception cross the API boundary.
+    e -> {:error, e}
   end
 
   # --- input validation -----------------------------------------------------
+
+  # Nothing here can read an encrypted file, and nothing used to notice: the
+  # outcome was a failed inflate or bytes that meant nothing. Decrypt upstream.
+  defp ensure_not_encrypted(pdf) do
+    if Facturx.PDF.encrypted?(pdf), do: {:error, :encrypted_pdf_unsupported}, else: :ok
+  end
 
   defp ensure_classic_xref(pdf) do
     if Regex.match?(~r|/Type\s*/XRef|, pdf) or not String.contains?(pdf, "trailer") do
@@ -257,7 +270,7 @@ defmodule Facturx.Embed do
   defp trailer_dict(pdf) do
     case last_match(pdf, "trailer") do
       nil -> {:error, :no_trailer}
-      pos -> {:ok, balanced_dict(pdf, pos)}
+      pos -> Facturx.PDF.balanced_dict(pdf, pos)
     end
   end
 
@@ -265,7 +278,7 @@ defmodule Facturx.Embed do
   defp object_dict(pdf, num) do
     case last_object_pos(pdf, num) do
       nil -> {:error, {:missing_object, num}}
-      pos -> {:ok, balanced_dict(pdf, pos)}
+      pos -> Facturx.PDF.balanced_dict(pdf, pos)
     end
   end
 
@@ -273,9 +286,9 @@ defmodule Facturx.Embed do
   # many PDF/A producers compress the /Metadata stream.
   defp object_stream(pdf, num) do
     with pos when is_integer(pos) <- last_object_pos(pdf, num),
-         dict = balanced_dict(pdf, pos),
+         {:ok, dict} <- Facturx.PDF.balanced_dict(pdf, pos),
          {s, _} <- :binary.match(pdf, "stream", scope: {pos, byte_size(pdf) - pos}),
-         data_start = skip_eol(pdf, s + 6),
+         data_start = Facturx.PDF.skip_eol(pdf, s + 6),
          {:ok, raw} <- stream_data(pdf, dict, data_start) do
       if String.contains?(dict, "/FlateDecode"), do: inflate(raw), else: {:ok, raw}
     else
@@ -283,45 +296,28 @@ defmodule Facturx.Embed do
     end
   end
 
-  # `/Length` is where the stream actually stops, and it is authoritative:
-  # `endstream` cannot be located by scanning, because stream data does contain
-  # those bytes — an uncompressed XMP packet mentioning the word, a deflate
-  # stored block copying its input verbatim. Guessing at the EOL that precedes
-  # it also eats a real byte as soon as the data ends with CR or LF: for a
-  # deflated `/Metadata` that is roughly one base in 256, and the embedding then
-  # fails outright on `:inflate_failed`.
-  #
-  # The length is still checked against `endstream` before being used: producers
-  # do get it wrong, and a wrong length would silently truncate where the scan
-  # would have worked.
   defp stream_data(pdf, dict, data_start) do
-    # The `\b` matters: without it the engine backtracks into the digits when
-    # the lookahead fires, so `/Length 120 0 R` captures "12" instead of failing.
-    with [_, n] <- Regex.run(~r{/Length\s+(\d+)\b(?!\s*\d+\s+R)}, dict),
-         len = String.to_integer(n),
-         true <- data_start + len <= byte_size(pdf),
-         tail = binary_part(pdf, data_start + len, byte_size(pdf) - data_start - len),
-         true <- eol_then_endstream?(tail) do
-      {:ok, binary_part(pdf, data_start, len)}
-    else
-      _ -> scan_to_endstream(pdf, data_start)
+    case Facturx.PDF.stream_length(dict, pdf, data_start) do
+      {:ok, len} -> {:ok, binary_part(pdf, data_start, len)}
+      :error -> scan_to_endstream(pdf, data_start)
     end
   end
-
-  defp eol_then_endstream?(<<"\r\n", rest::binary>>), do: String.starts_with?(rest, "endstream")
-
-  defp eol_then_endstream?(<<c, rest::binary>>) when c in [?\r, ?\n],
-    do: String.starts_with?(rest, "endstream")
-
-  defp eol_then_endstream?(rest), do: String.starts_with?(rest, "endstream")
 
   # No usable `/Length`. Unlike `Facturx.Extract`, which holds one object's
   # bytes and can take the last `endstream` in them, here the scope is the whole
   # file — so the first one after the data is the only defensible guess.
   defp scan_to_endstream(pdf, data_start) do
     case :binary.match(pdf, "endstream", scope: {data_start, byte_size(pdf) - data_start}) do
-      {e, _} -> {:ok, binary_part(pdf, data_start, strip_eol(pdf, data_start, e) - data_start)}
-      :nomatch -> :error
+      {e, _} ->
+        {:ok,
+         binary_part(
+           pdf,
+           data_start,
+           Facturx.PDF.strip_trailing_eol(pdf, data_start, e) - data_start
+         )}
+
+      :nomatch ->
+        :error
     end
   end
 
@@ -352,52 +348,12 @@ defmodule Facturx.Embed do
     end
   end
 
-  # From `pos`, find the first `<<` and return the balanced `<< ... >>` substring.
-  defp balanced_dict(pdf, pos) do
-    {open, _} = :binary.match(pdf, "<<", scope: {pos, byte_size(pdf) - pos})
-    tokens = delim_tokens(pdf, open)
-    close_end = match_close(tokens, 0, nil)
-    binary_part(pdf, open, close_end - open)
-  end
-
-  defp delim_tokens(pdf, from) do
-    scope = {from, byte_size(pdf) - from}
-
-    (Enum.map(:binary.matches(pdf, "<<", scope: scope), fn {p, _} -> {p, :open} end) ++
-       Enum.map(:binary.matches(pdf, ">>", scope: scope), fn {p, _} -> {p, :close} end))
-    |> Enum.sort()
-  end
-
-  defp match_close([{p, :open} | rest], depth, _), do: match_close(rest, depth + 1, p)
-  defp match_close([{p, :close} | _], 1, _), do: p + 2
-  defp match_close([{_, :close} | rest], depth, first), do: match_close(rest, depth - 1, first)
-  defp match_close([], _, _), do: raise("unbalanced dictionary")
-
   defp prev_startxref(pdf) do
     case Regex.scan(~r/startxref\s+(\d+)/, pdf) |> List.last() do
       [_, n] -> {:ok, String.to_integer(n)}
       _ -> {:error, :no_startxref}
     end
   end
-
-  defp skip_eol(bin, pos) do
-    case bin do
-      <<_::binary-size(pos), "\r\n", _::binary>> -> pos + 2
-      <<_::binary-size(pos), "\n", _::binary>> -> pos + 1
-      <<_::binary-size(pos), "\r", _::binary>> -> pos + 1
-      _ -> pos
-    end
-  end
-
-  defp strip_eol(bin, start, e) when e - 2 >= start do
-    case binary_part(bin, e - 2, 2) do
-      "\r\n" -> e - 2
-      <<_, c>> when c in [?\r, ?\n] -> e - 1
-      _ -> e
-    end
-  end
-
-  defp strip_eol(_bin, _start, e), do: e
 
   # --- misc -----------------------------------------------------------------
 

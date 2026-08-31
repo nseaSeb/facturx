@@ -279,6 +279,77 @@ defmodule Facturx.PdfRoundtripTest do
                {:error, {:unsupported_pdfa, "PDF/A-1"}}
     end
 
+    # `embed/3` promises `{:ok, binary()} | {:error, term()}`. It used to break
+    # that promise on a malformed dictionary — `raise "unbalanced dictionary"`,
+    # and a MatchError when no `<<` followed the trailer at all.
+    test "an unbalanced dictionary is an error, not an exception" do
+      pdf = String.replace(TestPDF.base(), "] >>\nstartxref", "]\nstartxref")
+
+      assert {:error, _} = Facturx.generate(pdf, @xml)
+    end
+
+    test "a trailer with no dictionary at all is an error, not an exception" do
+      base = TestPDF.base()
+      {s, _} = :binary.match(base, "trailer")
+      pdf = binary_part(base, 0, s) <> "trailer\nstartxref\n0\n%%EOF\n"
+
+      assert {:error, _} = Facturx.generate(pdf, @xml)
+    end
+
+    property "no byte string, however malformed, ever raises" do
+      base = TestPDF.base()
+
+      check all(
+              cut <- integer(0..byte_size(base)),
+              junk <- binary(max_length: 40)
+            ) do
+        pdf = binary_part(base, 0, cut) <> junk
+
+        assert match?({:ok, _}, Facturx.generate(pdf, @xml)) or
+                 match?({:error, _}, Facturx.generate(pdf, @xml))
+
+        assert match?({:ok, _}, Facturx.extract(pdf)) or
+                 match?({:error, _}, Facturx.extract(pdf))
+      end
+    end
+
+    test "refuses an encrypted PDF on both paths" do
+      pdf = encrypted(TestPDF.base())
+
+      assert Facturx.generate(pdf, @xml) == {:error, :encrypted_pdf_unsupported}
+      # Not :no_embedded_file — an encrypted file may well carry an attachment,
+      # it is simply out of reach.
+      assert Facturx.extract(pdf) == {:error, :encrypted_pdf_unsupported}
+    end
+
+    test "refuses an encrypted PDF that does carry a reachable-looking attachment" do
+      # The case that matters, and the one a check placed after the pipeline
+      # would miss entirely: encryption covers strings and stream *data*, never
+      # the object structure. So /EF, /AFRelationship and the object numbers
+      # stay plaintext, the whole lookup succeeds, and what comes back is
+      # ciphertext presented as an invoice.
+      {:ok, facturx} = Facturx.generate(TestPDF.base(), @xml)
+
+      assert Facturx.extract(encrypted(facturx)) == {:error, :encrypted_pdf_unsupported}
+    end
+
+    test "refuses an encrypted PDF that names its /Encrypt dictionary inline" do
+      pdf =
+        String.replace(
+          TestPDF.base(),
+          "trailer\n<< /Size",
+          "trailer\n<< /Encrypt << /Filter /Standard /V 2 >> /Size"
+        )
+
+      assert Facturx.generate(pdf, @xml) == {:error, :encrypted_pdf_unsupported}
+    end
+
+    test "the word \"encrypt\" in the document is not read as encryption" do
+      pdf = TestPDF.base(title: "Guide de chiffrement /Encrypt expliqué")
+
+      assert {:ok, _} = Facturx.generate(pdf, @xml)
+    end
+
     test "refuses a cross-reference stream, and says so when extracting one" do
       pdf = TestPDF.xref_stream_base()
 
@@ -299,6 +370,11 @@ defmodule Facturx.PdfRoundtripTest do
 
       assert {:ok, %{profile: nil}} = Facturx.extract(out)
     end
+  end
+
+  # A base declaring encryption, in the usual indirect form.
+  defp encrypted(pdf) do
+    String.replace(pdf, "trailer\n<< /Size", "trailer\n<< /Encrypt 9 0 R /Size")
   end
 
   # The catalog as the update left it: the *last* definition of object 1 wins.

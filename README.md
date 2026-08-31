@@ -60,13 +60,15 @@ wrong answer:
 | Not PDF/A at all | `{:error, :not_pdfa}` |
 | Already carries `/EmbeddedFiles` | `{:error, :already_has_embedded_files}` |
 | Indirect `/AF` or `/Names` in the catalog | `{:error, :af_indirect_unsupported}` / `{:error, :names_indirect_unsupported}` |
+| Encrypted (`/Encrypt`) | `{:error, :encrypted_pdf_unsupported}` on both paths — decrypt upstream |
 
-Two further points that no error can express:
+Malformed input is input, not a bug: `Facturx.Embed.embed/3` and
+`Facturx.Extract.extract/1` return `{:error, term()}` for any byte string
+whatsoever, and never raise.
 
-- **Encrypted PDFs are not supported.** Nothing detects `/Encrypt`, so the
-  outcome is a failure to inflate or meaningless bytes. Decrypt upstream.
-- **An incremental update invalidates an existing digital signature.** That is
-  inherent to appending to a signed file; sign after embedding, not before.
+One point no error can express: **an incremental update invalidates an existing
+digital signature.** That is inherent to appending to a signed file — sign after
+embedding, not before.
 
 `Facturx.Extract` is deliberately more permissive than `Facturx.Embed`: it reads
 the attachment out of any PDF, PDF/A or not, because reading cannot damage the

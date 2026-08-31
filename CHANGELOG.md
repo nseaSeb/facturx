@@ -17,6 +17,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   Factur-X extension schema without any error being raised. Found by the new
   property tests.
 
+- **`Facturx.Embed.embed/3` no longer raises.** It declared
+  `{:ok, binary()} | {:error, term()}` while `raise "unbalanced dictionary"` and
+  a `MatchError` (no `<<` after the trailer) could both reach the caller. A
+  malformed PDF is an input, not a programming error: the two sites now return
+  `{:error, :malformed_dictionary}` / `{:error, :dictionary_not_found}`, and both
+  `embed/3` and `Facturx.Extract.extract/1` carry a last-resort `rescue`. Pinned
+  by a property over arbitrary truncations and junk suffixes.
+- **Encrypted PDFs are refused instead of misread.** Nothing looked for
+  `/Encrypt`, so an encrypted file failed to inflate or produced meaningless
+  bytes. Both paths now return `{:error, :encrypted_pdf_unsupported}` — and on
+  extraction that is reported in place of `:no_embedded_file`, since an
+  unreadable attachment is not an absent one.
+
 ### Added
 - Property-based tests (`stream_data`): the build/parse fixed point over
   randomly pruned invoices, `Decimal` value *and* scale preservation, XMP
@@ -28,9 +41,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   `mix.exs`, which had never been compiled.
 
 ### Changed
+- The byte-level PDF rules shared by `Facturx.Embed` and `Facturx.Extract` —
+  where a stream stops, where a dictionary closes, how an EOL is skipped — move
+  to a single internal module, Facturx.PDF. They had been written twice and had
+  to be fixed twice for the same bug.
 - `README.md` documents which PDFs the library accepts and which it refuses,
-  including the two limits no error tuple can express: encrypted PDFs are not
-  detected, and an incremental update invalidates an existing digital signature.
+  error tuple by error tuple, plus the one limit no error can express: an
+  incremental update invalidates an existing digital signature.
 - `Facturx.XSD.Cache` is documented rather than hidden, clearing the two
   long-standing ExDoc warnings.
 
