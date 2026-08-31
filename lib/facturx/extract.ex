@@ -6,9 +6,11 @@ defmodule Facturx.Extract do
   (`/AFRelationship /Data`), decodes its `FlateDecode` stream, and reports the
   detected profile.
 
-  Supports classic cross-reference table PDFs (the shape emitted by the common
-  Typst + factur-x toolchains). Object streams / cross-reference streams are not
-  yet handled — see `docs/adr/0001-perimetre-et-architecture.md`.
+  Reads both cross-reference forms: the classic table, and the PDF 1.5+ stream
+  with its objects compressed into object streams. The index is built by scanning
+  for `N G obj` and then expanding every object stream — never from the
+  cross-reference table, which an incremental update leaves pointing at the
+  objects the update replaced.
 
   Unlike `Facturx.Embed`, this module does not require its input to be PDF/A, and
   does not check: reading an attachment cannot damage the document, so refusing a
@@ -52,15 +54,15 @@ defmodule Facturx.Extract do
   # check above is a gate and not, as it first was, a branch on the
   # `:no_embedded_file` result.
   defp read(pdf) do
-    objects = index_objects(pdf)
+    objects = Facturx.PDF.object_index(pdf)
 
     result =
       with {:ok, filespec} <- find_filespec(objects),
            {:ok, filename} <- embedded_filename(filespec),
            {:ok, ref} <- embedded_ref(filespec),
            {:ok, stream_obj} <- resolve(objects, ref),
-           {:ok, raw} <- stream_bytes(stream_obj),
-           {:ok, xml} <- inflate(raw) do
+           {:ok, raw} <- Facturx.PDF.stream_bytes(stream_obj),
+           {:ok, xml} <- Facturx.PDF.inflate(raw) do
         {:ok,
          %{
            # Detach small results from the multi-MB PDF binary (see moduledoc).
@@ -70,83 +72,7 @@ defmodule Facturx.Extract do
          }}
       end
 
-    # Having found nothing is not the same as there being nothing: a PDF using
-    # object/xref streams may well carry an attachment this module cannot reach.
-    # Say which it is rather than claim the PDF has none.
-    case result do
-      {:error, :no_embedded_file} ->
-        if object_streams?(pdf), do: {:error, :object_streams_unsupported}, else: result
-
-      other ->
-        other
-    end
-  end
-
-  defp object_streams?(pdf) do
-    String.contains?(pdf, "/ObjStm") or Regex.match?(~r|/Type\s*/XRef|, pdf)
-  end
-
-  # --- object index (classic xref, brute-force recovery) -------------------
-
-  # Map {num, gen} => object body (bytes between `obj` and `endobj`). Scanning
-  # for `N G obj` rather than trusting the xref table survives incremental
-  # updates; a later definition of the same object wins.
-  defp index_objects(pdf) do
-    Regex.scan(~r/(\d+)\s+(\d+)\s+obj\b/, pdf, return: :index)
-    |> Enum.reduce(%{}, fn [{s, len} | _], acc ->
-      header = binary_part(pdf, s, len)
-      [num, gen] = header |> String.split() |> Enum.take(2) |> Enum.map(&String.to_integer/1)
-      body_start = s + len
-
-      Map.put(acc, {num, gen}, object_body(pdf, body_start))
-    end)
-  end
-
-  # The index maps each object to `{body, :delimited | :truncated}`. The flag
-  # matters to `scan_to_endstream/3`: taking the *last* `endstream` is right
-  # within a delimited object, and wrong for one that runs to EOF, where it
-  # would slice the whole tail of the file.
-
-  # Bytes from `body_start` to the object's `endobj`.
-  #
-  # Not simply the first `endobj`: a compressed stream is arbitrary bytes, and
-  # deflate output contains the literal "endobj" or "endstream" often enough to
-  # matter (a stored block copies its input verbatim). So when the object holds
-  # a stream whose `/Length` is direct, the search resumes past the stream data,
-  # where a keyword can only be the real one.
-  defp object_body(pdf, body_start) do
-    rest = binary_part(pdf, body_start, byte_size(pdf) - body_start)
-
-    case :binary.match(rest, "endobj") do
-      :nomatch ->
-        {rest, :truncated}
-
-      {naive_end, _} ->
-        from = stream_data_end(rest, naive_end)
-
-        case :binary.match(rest, "endobj", scope: {from, byte_size(rest) - from}) do
-          {e, _} -> {binary_part(rest, 0, e), :delimited}
-          :nomatch -> {binary_part(rest, 0, naive_end), :delimited}
-        end
-    end
-  end
-
-  # Offset just past the stream data of `obj`, or 0 when there is nothing to
-  # skip — no `stream` keyword before `naive_end`, or no usable `/Length` to say
-  # where the data stops.
-  #
-  # The `scope:` is not an optimisation detail. `obj` runs to the end of the
-  # file, so an unbounded search would scan on to the *next* object's stream, or
-  # to EOF for a file whose streams all sit at the front — once per object,
-  # making the index quadratic in the file size.
-  defp stream_data_end(obj, naive_end) do
-    with {s, _} <- :binary.match(obj, "stream", scope: {0, naive_end}),
-         data_start = Facturx.PDF.skip_eol(obj, s + 6),
-         {:ok, len} <- Facturx.PDF.stream_length(binary_part(obj, 0, s), obj, data_start) do
-      data_start + len
-    else
-      _ -> 0
-    end
+    result
   end
 
   defp resolve(objects, {num, gen}) do
@@ -199,75 +125,6 @@ defmodule Facturx.Extract do
       {:ok, {String.to_integer(num), String.to_integer(gen)}}
     else
       _ -> {:error, :no_ef_ref}
-    end
-  end
-
-  # --- stream decoding ------------------------------------------------------
-
-  defp stream_bytes({obj, delimited}) do
-    case :binary.match(obj, "stream") do
-      :nomatch ->
-        {:error, :no_stream}
-
-      {s, _} ->
-        data_start = Facturx.PDF.skip_eol(obj, s + 6)
-
-        case Facturx.PDF.stream_length(binary_part(obj, 0, s), obj, data_start) do
-          {:ok, len} -> {:ok, binary_part(obj, data_start, len)}
-          :error -> scan_to_endstream(obj, data_start, delimited)
-        end
-    end
-  end
-
-  # No usable `/Length`: fall back to scanning, and take the **last**
-  # `endstream` of the object rather than the first — an earlier one is data.
-  #
-  # Only within a *delimited* object, though. A truncated one runs to the end of
-  # the file, so its "last endstream" is the file's, and the slice would span
-  # every object after this one — megabytes copied to fail at inflate. There,
-  # the first occurrence is the only bounded guess left.
-  defp scan_to_endstream(obj, data_start, delimited) do
-    scope = {data_start, byte_size(obj) - data_start}
-    matches = :binary.matches(obj, "endstream", scope: scope)
-
-    case if(delimited == :delimited, do: List.last(matches), else: List.first(matches)) do
-      nil ->
-        {:error, :no_stream}
-
-      {e, _} ->
-        stop = Facturx.PDF.strip_trailing_eol(obj, data_start, e)
-        {:ok, binary_part(obj, data_start, stop - data_start)}
-    end
-  end
-
-  # PDF FlateDecode is zlib (RFC 1950); fall back to raw deflate if needed.
-  defp inflate(data) do
-    case safe(fn -> :zlib.uncompress(data) end) do
-      {:ok, bin} -> {:ok, bin}
-      :error -> raw_inflate(data)
-    end
-  end
-
-  defp safe(fun) do
-    {:ok, fun.()}
-  rescue
-    _ -> :error
-  catch
-    _, _ -> :error
-  end
-
-  defp raw_inflate(data) do
-    z = :zlib.open()
-
-    try do
-      :zlib.inflateInit(z, -15)
-      {:ok, IO.iodata_to_binary(:zlib.inflate(z, data))}
-    rescue
-      _ -> {:error, :inflate_failed}
-    catch
-      _, _ -> {:error, :inflate_failed}
-    after
-      :zlib.close(z)
     end
   end
 

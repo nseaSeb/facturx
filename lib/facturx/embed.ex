@@ -18,7 +18,11 @@ defmodule Facturx.Embed do
     * PDF/A-1 or a non-PDF/A file → refused. No external normaliser (Ghostscript)
       is ever invoked.
 
-  Currently supports classic cross-reference-table PDFs (the Typst output shape).
+  Writes the cross-reference back in the form the base uses — a classic table and
+  trailer, or a PDF 1.5+ cross-reference stream — and never mixes the two: a
+  table appended to a stream-based document is what a strict reader is entitled
+  to reject. A catalog compressed inside an object stream is read from there and
+  rewritten at top level, which is what an incremental update means.
   """
 
   alias Facturx.Xmp
@@ -40,8 +44,8 @@ defmodule Facturx.Embed do
     profile = Keyword.get(opts, :profile, :en16931)
 
     with :ok <- ensure_not_encrypted(pdf),
-         :ok <- ensure_classic_xref(pdf),
-         {:ok, ctx} <- parse_base(pdf),
+         {:ok, shape} <- xref_shape(pdf),
+         {:ok, ctx} <- parse_base(pdf, shape),
          :ok <- check_pdfa_level(ctx.part) do
       build(pdf, xml, ctx, profile, filename)
     end
@@ -66,11 +70,15 @@ defmodule Facturx.Embed do
     if Facturx.PDF.encrypted?(pdf), do: {:error, :encrypted_pdf_unsupported}, else: :ok
   end
 
-  defp ensure_classic_xref(pdf) do
-    if Regex.match?(~r|/Type\s*/XRef|, pdf) or not String.contains?(pdf, "trailer") do
-      {:error, :xref_streams_unsupported}
-    else
-      :ok
+  # Which of the two cross-reference forms the base uses. Both are written back
+  # in kind: an incremental update must not change the shape of what it appends
+  # to, and a hybrid file — a table added to a stream-based document — is exactly
+  # the thing a strict PDF/A reader is entitled to reject.
+  defp xref_shape(pdf) do
+    cond do
+      String.contains?(pdf, "\ntrailer") -> {:ok, :table}
+      Regex.match?(~r|/Type\s*/XRef|, pdf) -> {:ok, :stream}
+      true -> {:error, :no_trailer}
     end
   end
 
@@ -82,16 +90,19 @@ defmodule Facturx.Embed do
 
   # --- parse what we need from the base ------------------------------------
 
-  defp parse_base(pdf) do
-    with {:ok, trailer} <- trailer_dict(pdf),
+  defp parse_base(pdf, shape) do
+    index = Facturx.PDF.object_index(pdf)
+
+    with {:ok, prev} <- prev_startxref(pdf),
+         {:ok, trailer} <- trailer_dict(pdf, shape, prev),
          {:ok, root_num} <- capture_int(trailer, ~r/\/Root\s+(\d+)\s+\d+\s+R/),
          {:ok, size} <- capture_int(trailer, ~r/\/Size\s+(\d+)/),
-         {:ok, catalog} <- object_dict(pdf, root_num),
+         {:ok, catalog} <- object_dict(index, root_num),
          {:ok, meta_num} <- capture_int(catalog, ~r/\/Metadata\s+(\d+)\s+\d+\s+R/),
-         {:ok, xmp} <- object_stream(pdf, meta_num),
-         {:ok, prev} <- prev_startxref(pdf) do
+         {:ok, xmp} <- object_stream(pdf, meta_num) do
       {:ok,
        %{
+         shape: shape,
          root_num: root_num,
          size: size,
          catalog: catalog,
@@ -119,7 +130,8 @@ defmodule Facturx.Embed do
   defp build(pdf, xml, ctx, profile, filename) do
     emb_num = ctx.size
     fs_num = ctx.size + 1
-    new_size = ctx.size + 2
+    # A cross-reference stream is itself an object, and needs a number of its own.
+    new_size = if ctx.shape == :stream, do: ctx.size + 3, else: ctx.size + 2
 
     with {:ok, catalog} <- catalog_obj(ctx.root_num, ctx.catalog, fs_num, filename) do
       xmp = Xmp.promote(ctx.xmp, profile, filename)
@@ -138,8 +150,8 @@ defmodule Facturx.Embed do
     end
   end
 
-  # Append each object, tracking byte offsets, then a classic xref section
-  # covering exactly the changed/added objects, then the updated trailer.
+  # Append each object, tracking byte offsets, then the cross-reference in the
+  # form the base uses — a classic section and trailer, or a stream object.
   defp assemble(prefix, objects, new_size, ctx) do
     {body, offsets} =
       Enum.reduce(objects, {prefix, %{}}, fn {num, bytes}, {acc, offs} ->
@@ -149,33 +161,64 @@ defmodule Facturx.Embed do
     nums = objects |> Enum.map(&elem(&1, 0)) |> Enum.sort()
     xref_offset = byte_size(body)
 
-    xref =
-      xref_subsections(nums, offsets)
+    case ctx.shape do
+      :table ->
+        trailer =
+          "trailer\n<< /Size #{new_size} /Root #{ctx.root_num} 0 R" <>
+            info_entry(ctx.info) <>
+            id_entry(ctx.id) <>
+            " /Prev #{ctx.prev} >>\nstartxref\n#{xref_offset}\n%%EOF\n"
 
-    trailer =
-      "trailer\n<< /Size #{new_size} /Root #{ctx.root_num} 0 R" <>
+        body <> xref_subsections(nums, offsets) <> trailer
+
+      :stream ->
+        # The stream object is the last number, and its own entry has to be in
+        # the table it is: a reader that cannot find the cross-reference stream
+        # cannot find anything.
+        self_num = new_size - 1
+        offsets = Map.put(offsets, self_num, xref_offset)
+
+        body <>
+          xref_stream_obj(self_num, Enum.sort([self_num | nums]), offsets, new_size, ctx) <>
+          "startxref\n#{xref_offset}\n%%EOF\n"
+    end
+  end
+
+  # A cross-reference stream (PDF 32000-1, 7.5.8). `/W [1 4 2]` is one byte of
+  # entry type, four of offset, two of generation — the widths the writers in the
+  # wild use, and wide enough for any file this library will append to.
+  #
+  # No `/DecodeParms`: a predictor only pays on a full table of thousands of
+  # entries, and this one holds four.
+  defp xref_stream_obj(num, nums, offsets, new_size, ctx) do
+    entries =
+      for n <- nums, into: <<>> do
+        <<1, Map.fetch!(offsets, n)::32, 0::16>>
+      end
+
+    data = :zlib.compress(entries)
+
+    dict =
+      "<< /Type /XRef /Size #{new_size} /W [1 4 2] /Index [#{index_array(nums)}]" <>
+        " /Root #{ctx.root_num} 0 R" <>
         info_entry(ctx.info) <>
         id_entry(ctx.id) <>
-        " /Prev #{ctx.prev} >>\nstartxref\n#{xref_offset}\n%%EOF\n"
+        " /Prev #{ctx.prev} /Filter /FlateDecode /Length #{byte_size(data)} >>"
 
-    body <> xref <> trailer
+    "#{num} 0 obj\n" <> dict <> "\nstream\n" <> data <> "\nendstream\nendobj\n"
+  end
+
+  # `/Index` is the same contiguous runs a classic section splits into, flattened
+  # to `first count first count`.
+  defp index_array(nums) do
+    nums
+    |> contiguous_runs()
+    |> Enum.map_join(" ", fn run -> "#{hd(run)} #{length(run)}" end)
   end
 
   # Group the changed object numbers into contiguous xref subsections.
   defp xref_subsections(nums, offsets) do
-    runs =
-      Enum.chunk_while(
-        nums,
-        [],
-        fn n, acc ->
-          case acc do
-            [prev | _] when n == prev + 1 -> {:cont, [n | acc]}
-            [] -> {:cont, [n]}
-            _ -> {:cont, Enum.reverse(acc), [n]}
-          end
-        end,
-        fn acc -> {:cont, Enum.reverse(acc), []} end
-      )
+    runs = contiguous_runs(nums)
 
     entries =
       Enum.map_join(runs, "", fn run ->
@@ -184,6 +227,21 @@ defmodule Facturx.Embed do
       end)
 
     "xref\n" <> entries
+  end
+
+  defp contiguous_runs(nums) do
+    Enum.chunk_while(
+      nums,
+      [],
+      fn n, acc ->
+        case acc do
+          [prev | _] when n == prev + 1 -> {:cont, [n | acc]}
+          [] -> {:cont, [n]}
+          _ -> {:cont, Enum.reverse(acc), [n]}
+        end
+      end,
+      fn acc -> {:cont, Enum.reverse(acc), []} end
+    )
   end
 
   defp xref_entry(offset) do
@@ -272,18 +330,29 @@ defmodule Facturx.Embed do
 
   # --- tiny PDF helpers (classic xref) -------------------------------------
 
-  defp trailer_dict(pdf) do
+  # The document's trailer, whichever form it takes. With a cross-reference
+  # stream there is no `trailer` keyword: its dictionary carries the same keys —
+  # /Root, /Size, /Info, /ID, /Prev — and `startxref` points straight at it.
+  defp trailer_dict(pdf, :table, _prev) do
     case last_match(pdf, "trailer") do
       nil -> {:error, :no_trailer}
       pos -> Facturx.PDF.balanced_dict(pdf, pos)
     end
   end
 
-  # The last object N definition, returned as its outer << ... >> dictionary.
-  defp object_dict(pdf, num) do
-    case last_object_pos(pdf, num) do
+  defp trailer_dict(pdf, :stream, prev) when prev < byte_size(pdf) do
+    Facturx.PDF.balanced_dict(pdf, prev)
+  end
+
+  defp trailer_dict(_pdf, :stream, _prev), do: {:error, :no_trailer}
+
+  # Object N's outer << ... >> dictionary, from the shared index — which reaches
+  # inside object streams. The catalog of a PDF 1.5 file is usually compressed in
+  # one, so looking for `N 0 obj` in the raw bytes would not find it.
+  defp object_dict(index, num) do
+    case Map.get(index, {num, 0}) do
+      {body, _} -> Facturx.PDF.balanced_dict(body, 0)
       nil -> {:error, {:missing_object, num}}
-      pos -> Facturx.PDF.balanced_dict(pdf, pos)
     end
   end
 

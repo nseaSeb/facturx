@@ -53,6 +53,29 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   unreadable attachment is not an absent one.
 
 ### Added
+- **PDF 1.5+ files are read and written.** Cross-reference streams
+  (`/Type /XRef`) and object streams (`/ObjStm`) were refused outright, which
+  ruled out most current producers. Both are supported now:
+
+    * `Facturx.Extract` builds its object index by scanning for `N G obj` and
+      then expanding every object stream. It never reads the cross-reference
+      table — a scan is what survives an incremental update, where the previous
+      revision's table still points at the objects the update replaced.
+    * `Facturx.Embed` writes the update back in the form the base uses, and never
+      a hybrid: a classic table appended to a stream-based document is what a
+      strict PDF/A reader is entitled to reject. A catalog compressed inside an
+      object stream is read from there and rewritten at top level.
+
+  Verified on a real file rather than a synthetic one. No tool on the development
+  machine writes cross-reference streams — Ghostscript's pdfwrite emits a classic
+  table, pypdf's writer likewise — so `dev/tools/xref_stream_base.py`
+  re-serialises the PDF/A base with an object stream and a cross-reference
+  stream, and `mix facturx.harness` has veraPDF vouch for that base before
+  concluding anything from what we write to it. The output is PDF/A-3b with zero
+  failed rules, and the Python `akretion/factur-x` reference navigates our
+  cross-reference stream and extracts the payload byte-identically — which is
+  what says it is correct rather than merely self-consistent.
+
 - **`Facturx.totals/2` derives the document arithmetic.** The line net amounts,
   the VAT breakdown grouped by category and rate, and BT-106 to BT-115 —
   `BR-CO-10` to `BR-CO-17` and the per-category basis rules. None of it is
@@ -125,6 +148,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   `mix.exs`, which had never been compiled.
 
 ### Changed
+- The Saxon image passes `--timeout 300000`. Its help text says "the maximum
+  time a transformation is allowed to run" without a unit, and the unit is
+  **milliseconds** — `--timeout 300` gives 300 ms and fails nearly every
+  transformation. It needs raising because the stock default is short enough that
+  the emulated arm64 run exceeds it under concurrent requests.
+- `Facturx.ValidateTest` is no longer `async`. Every `:saxon` test posts to one
+  shared server, and sixteen concurrent transformations of a multi-megabyte
+  stylesheet is how that timeout started firing, as an HTTP 400 on whichever test
+  was unlucky. The concurrency bought nothing: the work is all on the far side of
+  one socket.
 - The byte-level PDF rules shared by `Facturx.Embed` and `Facturx.Extract` —
   where a stream stops, where a dictionary closes, how an EOL is skipped — move
   to a single internal module, Facturx.PDF. They had been written twice and had

@@ -121,6 +121,236 @@ defmodule Facturx.PDF do
     end
   end
 
+  @doc """
+  Every object in `pdf`, as `%{{number, generation} => {body, :delimited | :truncated}}`.
+
+  Two sources, merged. First a scan for `N G obj` — rather than the
+  cross-reference table, because a scan survives an incremental update, where the
+  table of the previous revision still points at the object the update replaced.
+  Then the contents of every object stream, since a PDF 1.5 file keeps most of
+  its dictionaries compressed inside one and they have no `N G obj` header of
+  their own.
+
+  A top-level definition wins over a compressed one carrying the same number, and
+  a later object stream wins over an earlier one: that is what an incremental
+  update means, and it is the rule the cross-reference table would have applied.
+  """
+  @spec object_index(binary()) ::
+          %{{non_neg_integer(), non_neg_integer()} => {binary(), :delimited | :truncated}}
+
+  def object_index(pdf) do
+    scanned = scan_objects(pdf)
+    top_level = Map.new(scanned, fn {key, entry} -> {key, entry} end)
+
+    scanned
+    |> Enum.filter(fn {_key, {body, _}} -> String.contains?(body, "/ObjStm") end)
+    |> Enum.map(fn {_key, entry} -> expand_object_stream(entry) end)
+    |> Enum.reject(&(&1 == :error))
+    |> Enum.reduce(%{}, &Map.merge(&2, &1))
+    |> Map.merge(top_level)
+  end
+
+  # An object stream holds `/N` objects: a header of `number offset` pairs, then
+  # the objects themselves, the first at `/First`. Offsets are relative to
+  # `/First`, and the last object runs to the end of the data.
+  defp expand_object_stream({body, _} = entry) do
+    with {:ok, dict} <- object_stream_dict(body),
+         [_, n] <- Regex.run(~r{/N\s+(\d+)}, dict),
+         [_, first] <- Regex.run(~r{/First\s+(\d+)}, dict),
+         {:ok, raw} <- stream_bytes(entry),
+         {:ok, data} <- maybe_inflate(dict, raw) do
+      count = String.to_integer(n)
+      first = String.to_integer(first)
+
+      case pairs(data, count, first) do
+        :error -> :error
+        pairs -> slice(data, pairs, first)
+      end
+    else
+      _ -> :error
+    end
+  end
+
+  defp object_stream_dict(body) do
+    case :binary.match(body, "stream") do
+      {s, _} -> {:ok, binary_part(body, 0, s)}
+      :nomatch -> :error
+    end
+  end
+
+  defp maybe_inflate(dict, raw) do
+    if String.contains?(dict, "/FlateDecode"), do: inflate(raw), else: {:ok, raw}
+  end
+
+  defp pairs(data, count, first) when byte_size(data) >= first do
+    numbers =
+      data
+      |> binary_part(0, first)
+      |> String.split()
+      |> Enum.map(&Integer.parse/1)
+
+    if Enum.any?(numbers, &(&1 == :error)) or length(numbers) < count * 2 do
+      :error
+    else
+      numbers
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.take(count * 2)
+      |> Enum.chunk_every(2)
+      |> Enum.map(fn [number, offset] -> {number, offset} end)
+    end
+  end
+
+  defp pairs(_data, _count, _first), do: :error
+
+  defp slice(data, pairs, first) do
+    stops = pairs |> Enum.drop(1) |> Enum.map(&elem(&1, 1))
+    stops = stops ++ [byte_size(data) - first]
+
+    pairs
+    |> Enum.zip(stops)
+    |> Enum.reduce(%{}, fn {{number, offset}, stop}, acc ->
+      start = first + offset
+      length = stop - offset
+
+      if start >= 0 and length >= 0 and start + length <= byte_size(data) do
+        # A compressed object has no `endobj`, so its extent is exactly what the
+        # header says: delimited, by construction.
+        Map.put(acc, {number, 0}, {binary_part(data, start, length), :delimited})
+      else
+        acc
+      end
+    end)
+  end
+
+  # Map {num, gen} => object body (bytes between `obj` and `endobj`). Scanning
+  # for `N G obj` rather than trusting the xref table survives incremental
+  # updates; a later definition of the same object wins.
+  # In file order, and a list rather than a map: the order is what makes the
+  # merge above deterministic, and positions are never needed again.
+  defp scan_objects(pdf) do
+    ~r/(\d+)\s+(\d+)\s+obj\b/
+    |> Regex.scan(pdf, return: :index)
+    |> Enum.map(fn [{s, len} | _] ->
+      [num, gen] =
+        pdf
+        |> binary_part(s, len)
+        |> String.split()
+        |> Enum.take(2)
+        |> Enum.map(&String.to_integer/1)
+
+      {{num, gen}, object_body(pdf, s + len)}
+    end)
+  end
+
+  # Bytes from `body_start` to the object's `endobj`.
+  #
+  # Not simply the first `endobj`: a compressed stream is arbitrary bytes, and
+  # deflate output contains the literal "endobj" or "endstream" often enough to
+  # matter (a stored block copies its input verbatim). So when the object holds
+  # a stream whose `/Length` is direct, the search resumes past the stream data,
+  # where a keyword can only be the real one.
+  defp object_body(pdf, body_start) do
+    rest = binary_part(pdf, body_start, byte_size(pdf) - body_start)
+
+    case :binary.match(rest, "endobj") do
+      :nomatch ->
+        {rest, :truncated}
+
+      {naive_end, _} ->
+        from = stream_data_end(rest, naive_end)
+
+        case :binary.match(rest, "endobj", scope: {from, byte_size(rest) - from}) do
+          {e, _} -> {binary_part(rest, 0, e), :delimited}
+          :nomatch -> {binary_part(rest, 0, naive_end), :delimited}
+        end
+    end
+  end
+
+  # Offset just past the stream data of `obj`, or 0 when there is nothing to
+  # skip — no `stream` keyword before `naive_end`, or no usable `/Length` to say
+  # where the data stops.
+  #
+  # The `scope:` is not an optimisation detail. `obj` runs to the end of the
+  # file, so an unbounded search would scan on to the *next* object's stream, or
+  # to EOF for a file whose streams all sit at the front — once per object,
+  # making the index quadratic in the file size.
+  defp stream_data_end(obj, naive_end) do
+    with {s, _} <- :binary.match(obj, "stream", scope: {0, naive_end}),
+         data_start = Facturx.PDF.skip_eol(obj, s + 6),
+         {:ok, len} <- Facturx.PDF.stream_length(binary_part(obj, 0, s), obj, data_start) do
+      data_start + len
+    else
+      _ -> 0
+    end
+  end
+
+  def stream_bytes({obj, delimited}) do
+    case :binary.match(obj, "stream") do
+      :nomatch ->
+        {:error, :no_stream}
+
+      {s, _} ->
+        data_start = Facturx.PDF.skip_eol(obj, s + 6)
+
+        case Facturx.PDF.stream_length(binary_part(obj, 0, s), obj, data_start) do
+          {:ok, len} -> {:ok, binary_part(obj, data_start, len)}
+          :error -> scan_to_endstream(obj, data_start, delimited)
+        end
+    end
+  end
+
+  # No usable `/Length`: fall back to scanning, and take the **last**
+  # `endstream` of the object rather than the first — an earlier one is data.
+  #
+  # Only within a *delimited* object, though. A truncated one runs to the end of
+  # the file, so its "last endstream" is the file's, and the slice would span
+  # every object after this one — megabytes copied to fail at inflate. There,
+  # the first occurrence is the only bounded guess left.
+  defp scan_to_endstream(obj, data_start, delimited) do
+    scope = {data_start, byte_size(obj) - data_start}
+    matches = :binary.matches(obj, "endstream", scope: scope)
+
+    case if(delimited == :delimited, do: List.last(matches), else: List.first(matches)) do
+      nil ->
+        {:error, :no_stream}
+
+      {e, _} ->
+        stop = Facturx.PDF.strip_trailing_eol(obj, data_start, e)
+        {:ok, binary_part(obj, data_start, stop - data_start)}
+    end
+  end
+
+  # PDF FlateDecode is zlib (RFC 1950); fall back to raw deflate if needed.
+  def inflate(data) do
+    case safe(fn -> :zlib.uncompress(data) end) do
+      {:ok, bin} -> {:ok, bin}
+      :error -> raw_inflate(data)
+    end
+  end
+
+  defp safe(fun) do
+    {:ok, fun.()}
+  rescue
+    _ -> :error
+  catch
+    _, _ -> :error
+  end
+
+  defp raw_inflate(data) do
+    z = :zlib.open()
+
+    try do
+      :zlib.inflateInit(z, -15)
+      {:ok, IO.iodata_to_binary(:zlib.inflate(z, data))}
+    rescue
+      _ -> {:error, :inflate_failed}
+    catch
+      _, _ -> {:error, :inflate_failed}
+    after
+      :zlib.close(z)
+    end
+  end
+
   @doc "`stream` must be followed by CRLF or LF; the data begins after it."
   @spec skip_eol(binary(), non_neg_integer()) :: non_neg_integer()
   def skip_eol(bin, pos) do

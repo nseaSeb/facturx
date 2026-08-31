@@ -52,6 +52,15 @@ COPY priv/schematron/extended/FACTUR-X_EXTENDED_codedb.xml /opt/facturx/
 COPY priv/schematron/LICENSE.akretion.txt /opt/facturx/
 COPY priv/NOTICE.md /opt/facturx/
 
+# --timeout is in **milliseconds**, which the help text does not say — passing
+# 300 for "five minutes" gives 300 ms and times out essentially every
+# transformation. Five minutes is 300000.
+#
+# It needs raising at all because the stock default is short enough that the
+# emulated arm64 run exceeds it: compiling the 4 MB EXTENDED stylesheet under
+# concurrent requests made the server abort with a TimeoutException, surfacing as
+# an HTTP 400 on whichever test was unlucky.
+#
 # --insecure permits document() to read the file above. Everything else stays at
 # the upstream default.
-CMD ["/bin/sh", "-c", "java $JAVA_OPTS -jar app.jar --insecure"]
+CMD ["/bin/sh", "-c", "java $JAVA_OPTS -jar app.jar --insecure --timeout 300000"]

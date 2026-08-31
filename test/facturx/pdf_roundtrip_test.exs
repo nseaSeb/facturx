@@ -212,6 +212,82 @@ defmodule Facturx.PdfRoundtripTest do
     end
   end
 
+  # PDF 1.5+ keeps its cross-reference in a stream and most of its dictionaries
+  # inside object streams. Both were refused outright until now, which ruled out
+  # the output of most current producers.
+  describe "cross-reference streams and object streams" do
+    for {label, builder} <- [
+          {"a cross-reference stream base", :xref_stream_base},
+          {"an object-stream base", :objstm_base}
+        ] do
+      test "#{label} round-trips" do
+        base = apply(TestPDF, unquote(builder), [])
+
+        refute base =~ "\ntrailer"
+
+        assert {:ok, out} = Facturx.generate(base, @xml, profile: :en16931)
+        # Still an incremental update: the base survives byte for byte.
+        assert :binary.part(out, 0, byte_size(base)) == base
+
+        assert {:ok, %{xml: @xml, filename: "factur-x.xml", profile: :en16931}} =
+                 Facturx.extract(out)
+      end
+
+      test "#{label} gets a cross-reference stream back, never a hybrid" do
+        base = apply(TestPDF, unquote(builder), [])
+        {:ok, out} = Facturx.generate(base, @xml)
+
+        # A classic table appended to a stream-based document is what a strict
+        # PDF/A reader is entitled to reject.
+        refute out =~ "\ntrailer"
+        assert out =~ "/Type /XRef"
+      end
+
+      test "#{label} keeps its XMP promotion" do
+        base = apply(TestPDF, unquote(builder), [])
+        {:ok, out} = Facturx.generate(base, @xml, profile: :basic)
+
+        assert out =~ "<pdfaid:part>3</pdfaid:part>"
+        assert out =~ "<fx:ConformanceLevel>BASIC</fx:ConformanceLevel>"
+        assert out =~ "urn:factur-x:pdfa:CrossIndustryDocument:invoice:1p0#"
+      end
+    end
+
+    test "the catalog is found even when it is compressed inside an object stream" do
+      base = TestPDF.objstm_base()
+
+      # The point of the shape: `1 0 obj` is nowhere in the raw bytes.
+      refute Regex.match?(~r/(?<!\d)1 0 obj/, base)
+
+      {:ok, out} = Facturx.generate(base, @xml)
+      # The update rewrites object 1, so the merged catalog is top level.
+      assert out =~ "/AFRelationship /Data"
+      assert out =~ "/PageMode /UseAttachments"
+    end
+
+    test "every offset the written cross-reference stream states is an object header" do
+      base = TestPDF.xref_stream_base()
+      {:ok, out} = Facturx.generate(base, @xml)
+
+      for {number, offset} <- last_xref_stream(out) do
+        assert binary_part(out, offset, byte_size("#{number} 0 obj")) == "#{number} 0 obj",
+               "object #{number}: offset #{offset} does not land on its header"
+      end
+    end
+
+    test "an object stream whose contents cannot be inflated is not fatal" do
+      base = TestPDF.objstm_base()
+      {s, _} = :binary.match(base, "/ObjStm")
+      # Corrupt the compressed payload of the container, not its dictionary.
+      broken =
+        binary_part(base, 0, s + 40) <>
+          "@@@@" <> binary_part(base, s + 44, byte_size(base) - s - 44)
+
+      assert {:error, _} = Facturx.generate(broken, @xml)
+      assert {:error, _} = Facturx.extract(broken)
+    end
+  end
+
   describe "catalog merge" do
     test "merges into a base that already has a /Names dict, keeping /Dests" do
       base =
@@ -373,13 +449,12 @@ defmodule Facturx.PdfRoundtripTest do
       assert {:ok, _} = Facturx.generate(pdf, @xml)
     end
 
-    test "refuses a cross-reference stream, and says so when extracting one" do
-      pdf = TestPDF.xref_stream_base()
+    test "a file with neither a trailer nor a cross-reference stream is refused" do
+      base = TestPDF.base()
+      {s, _} = :binary.match(base, "\nxref")
+      pdf = binary_part(base, 0, s) <> "\nstartxref\n0\n%%EOF\n"
 
-      assert Facturx.generate(pdf, @xml) == {:error, :xref_streams_unsupported}
-      # Not :no_embedded_file — the attachment may exist and simply be out of
-      # reach, which is a different thing to tell the caller.
-      assert Facturx.extract(pdf) == {:error, :object_streams_unsupported}
+      assert Facturx.generate(pdf, @xml) == {:error, :no_trailer}
     end
   end
 
@@ -398,6 +473,32 @@ defmodule Facturx.PdfRoundtripTest do
   # A base declaring encryption, in the usual indirect form.
   defp encrypted(pdf) do
     String.replace(pdf, "trailer\n<< /Size", "trailer\n<< /Encrypt 9 0 R /Size")
+  end
+
+  # The entries of the cross-reference *stream* the update appended, as
+  # `%{number => offset}`. `/W [1 4 2]` and `/Index` are what this library
+  # writes; nothing here tries to be a general reader.
+  defp last_xref_stream(pdf) do
+    # `startxref` points at the object, whose dictionary opens after its header —
+    # searching forward from `/Type /XRef` would land past the `<<`.
+    [_, offset] = Regex.scan(~r/startxref\s+(\d+)/, pdf) |> List.last()
+    s = String.to_integer(offset)
+    {:ok, dict} = Facturx.PDF.balanced_dict(pdf, s)
+    [_, index] = Regex.run(~r/\/Index \[([^\]]*)\]/, dict)
+
+    numbers =
+      index
+      |> String.split()
+      |> Enum.map(&String.to_integer/1)
+      |> Enum.chunk_every(2)
+      |> Enum.flat_map(fn [first, count] -> Enum.to_list(first..(first + count - 1)) end)
+
+    {:ok, raw} = Facturx.PDF.stream_bytes({binary_part(pdf, s, byte_size(pdf) - s), :truncated})
+    {:ok, data} = Facturx.PDF.inflate(raw)
+
+    numbers
+    |> Enum.zip(for <<1, offset::32, 0::16 <- data>>, do: offset)
+    |> Map.new()
   end
 
   # The catalog as the update left it: the *last* definition of object 1 wins.

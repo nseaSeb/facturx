@@ -1,5 +1,10 @@
 defmodule Facturx.ValidateTest do
-  use ExUnit.Case, async: true
+  # Not async: every `:saxon` test in here posts to one shared Saxon server, and
+  # sixteen concurrent transformations of a multi-megabyte stylesheet is how the
+  # server's own transformation timeout starts firing — an HTTP 400 on whichever
+  # test happened to be unlucky. Nothing is gained by the concurrency: the work
+  # is all on the far side of one socket.
+  use ExUnit.Case, async: false
 
   describe "interpret/1 (SVRL report parsing)" do
     test "an empty schematron-output is valid" do

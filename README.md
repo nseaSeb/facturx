@@ -68,15 +68,17 @@ Python library does):
 
 ### Which PDFs the library accepts
 
-`Facturx.Embed` reads and writes classic cross-reference **tables**, and works by
-incremental update — the base file is preserved byte for byte and the new objects
-are appended. What that rules out, each with its own error rather than a silent
-wrong answer:
+`Facturx.Embed` works by incremental update: the base file is preserved byte for
+byte and the new objects are appended. What that rules out, each with its own
+error rather than a silent wrong answer:
+
+Both cross-reference forms are read and written: the classic table, and the
+PDF 1.5+ stream with its objects compressed into object streams — the shape most
+current producers emit. An update is written back in the form the base uses,
+never as a hybrid.
 
 | Input | Result |
 |---|---|
-| Cross-reference **stream** (`/Type /XRef`, PDF 1.5+) | `{:error, :xref_streams_unsupported}`, and `{:error, :object_streams_unsupported}` on extraction |
-| Object streams (`/ObjStm`) | same |
 | PDF/A-1 | `{:error, {:unsupported_pdfa, "PDF/A-1"}}` — the standard forbids embedded files |
 | Not PDF/A at all | `{:error, :not_pdfa}` |
 | Already carries `/EmbeddedFiles` | `{:error, :already_has_embedded_files}` |

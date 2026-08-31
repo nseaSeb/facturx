@@ -27,6 +27,7 @@ defmodule Mix.Tasks.Facturx.Harness do
 
   @root File.cwd!()
   @harness "test/fixtures/local/harness"
+  @generator "dev/tools/xref_stream_base.py"
 
   @impl Mix.Task
   def run(_args) do
@@ -63,8 +64,61 @@ defmodule Mix.Tasks.Facturx.Harness do
       conformance("base is PDF/A-2b", paths, paths.base, "2b"),
       python_reference(paths, cii),
       our_output(paths, cii),
-      per_profile(paths)
+      per_profile(paths),
+      xref_stream(paths, cii)
     ])
+  end
+
+  # The PDF 1.5+ path, on a real file rather than a synthetic one. No tool here
+  # writes cross-reference streams — Ghostscript's pdfwrite emits a classic
+  # table, pypdf's writer likewise — so the base is re-serialised by
+  # dev/tools/xref_stream_base.py, and veraPDF vouches for it before anything is
+  # concluded from what we write to it.
+  defp xref_stream(paths, cii) do
+    base = Path.join(paths.dir, "base_xrefstream.pdf")
+    ours = Path.join(paths.dir, "ours_xrefstream.pdf")
+
+    {out, status} =
+      System.cmd(paths.python, [@generator, paths.base, base], stderr_to_stdout: true)
+
+    if status != 0 do
+      [check("cross-reference stream base builds", false, String.trim(out))]
+    else
+      {:ok, pdf} = Facturx.generate(File.read!(base), cii)
+      File.write!(ours, pdf)
+
+      [
+        check("cross-reference stream base builds", true, String.trim(out)),
+        check(
+          "the base has no trailer keyword",
+          not String.contains?(File.read!(base), "\ntrailer"),
+          "as a PDF 1.5+ file"
+        ),
+        conformance("that base is PDF/A-2b", paths, base, "2b"),
+        conformance("our output from it is PDF/A-3b", paths, ours, "3b"),
+        extraction("our Extract reads it back", ours, cii),
+        # An independent parser navigating the cross-reference stream we wrote is
+        # what says it is correct, rather than merely self-consistent.
+        python_extraction(paths, ours, cii)
+      ]
+    end
+  end
+
+  defp python_extraction(paths, file, expected) do
+    out = Path.join(paths.dir, "python_extracted.xml")
+    File.rm(out)
+    {log, status} = System.cmd(paths.facturx_extract, [file, out], stderr_to_stdout: true)
+
+    cond do
+      status != 0 ->
+        check("the python reference reads it too", false, summarise(log))
+
+      not File.exists?(out) ->
+        check("the python reference reads it too", false, "no output")
+
+      true ->
+        check("the python reference reads it too", File.read!(out) == expected, "byte-identical")
+    end
   end
 
   # Regenerate the reference with the Python CLI, then read it with our Extract.
@@ -183,7 +237,9 @@ defmodule Mix.Tasks.Facturx.Harness do
     %{
       dir: dir,
       verapdf: System.find_executable("verapdf") || "/opt/homebrew/bin/verapdf",
+      python: Path.join(@root, ".venv-dev/bin/python"),
       facturx_pdfgen: Path.join(@root, ".venv-dev/bin/facturx-pdfgen"),
+      facturx_extract: Path.join(@root, ".venv-dev/bin/facturx-pdfextractxml"),
       golden: Path.join(@root, "test/fixtures/local/facturx-en16931.pdf"),
       base: Path.join(dir, "base.pdf"),
       cii: Path.join(dir, "cii.xml"),
@@ -194,7 +250,10 @@ defmodule Mix.Tasks.Facturx.Harness do
   defp prerequisites(paths) do
     [
       {"veraPDF", paths.verapdf},
+      {"python", paths.python},
       {"python facturx-pdfgen", paths.facturx_pdfgen},
+      {"python facturx-pdfextractxml", paths.facturx_extract},
+      {"the cross-reference stream generator", Path.join(@root, @generator)},
       {"golden fixture", paths.golden},
       {"harness base", paths.base},
       {"harness cii.xml", paths.cii}
