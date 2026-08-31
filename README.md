@@ -142,6 +142,53 @@ invoice = %Facturx.Invoice{
 # {:ok, facturx_pdf} = Facturx.generate(pdf_a2b_binary, cii_xml)
 ```
 
+### Let the library do the arithmetic
+
+`Facturx.totals/2` derives the line amounts, the VAT breakdown and the document
+totals — `BR-CO-10` to `BR-CO-17`, which the XSD does not check and only the
+Schematron catches, after the fact.
+
+```elixir
+invoice = %Facturx.Invoice{
+  number: "FA-2026-0042",
+  issue_date: ~D[2026-03-15],
+  currency: "EUR",
+  seller: %{name: "Vendeur SAS", address: %{country: "FR"}, vat: "FR12345678901"},
+  buyer: %{name: "Acheteur SARL", address: %{country: "FR"}},
+  lines: [
+    %{id: "1", name: "Prestation", net_price: Decimal.new("33.33"),
+      quantity: Decimal.new("3"), unit: "C62",
+      vat_category: "S", vat_rate: Decimal.new("5.50")}
+  ]
+}
+
+{:ok, complete} = Facturx.totals(invoice)
+
+complete.totals[:line_total]   # => 99.99
+complete.totals[:tax_total]    # => 5.50   (BR-CO-17 rounds 5.49945 to the cent)
+complete.totals[:grand_total]  # => 105.49
+```
+
+A figure you supplied is kept, and a disagreement is reported rather than
+resolved:
+
+```elixir
+{:error, {:totals_mismatch, [{[:totals, :grand_total], given, computed}]}}
+```
+
+Pass `overwrite: true` to take the computed figures anyway. Two amounts are never
+derived, because nothing in the invoice determines them: `:prepaid` (BT-113) and
+`:rounding` (BT-114).
+
+`Facturx.new/1` is the other half — it builds an `Invoice` from a plain map,
+reporting every problem at once rather than the first, and coercing integers and
+strings to `Decimal`. **Floats are refused**: one that reaches it has usually
+been through float arithmetic already, and `0.1 + 0.2` is `0.30000000000000004`
+before anything here can see it.
+
+Both are optional. `Facturx.build/2` and `generate/3` take a bare struct or map
+exactly as before.
+
 ### Extract and parse a received invoice
 
 ```elixir

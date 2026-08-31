@@ -53,6 +53,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   unreadable attachment is not an absent one.
 
 ### Added
+- **`Facturx.totals/2` derives the document arithmetic.** The line net amounts,
+  the VAT breakdown grouped by category and rate, and BT-106 to BT-115 —
+  `BR-CO-10` to `BR-CO-17` and the per-category basis rules. None of it is
+  checked by the XSD; until now the caller computed all of it by hand and found
+  out from a Schematron report, or from a rejected invoice.
+
+  A figure the caller supplied is kept, and a disagreement is **reported**
+  rather than resolved: `{:error, {:totals_mismatch, [{path, given, computed}]}}`.
+  Pass `overwrite: true` to take the computed figures. `:prepaid` (BT-113) and
+  `:rounding` (BT-114) are never derived — nothing in the invoice determines
+  them.
+
+- **`Facturx.new/1` builds an invoice from a plain map**, reporting every problem
+  at once rather than the first, and coercing integers and strings to `Decimal`.
+  **Floats are refused.** `Decimal.from_float/1` is faithful, so this is not
+  about that conversion: a float reaching the boundary has usually been through
+  float arithmetic already, and `0.1 + 0.2` is `0.30000000000000004` before
+  anything here can see it. Accepting it would record the drift and call it
+  validated.
+
+  Both are optional — `build/2` and `generate/3` still take a bare struct or map.
+  `docs/adr/0001-perimetre-et-architecture.md` records why the original "no
+  struct-level validation" decision was revised.
+
 - **The MINIMUM, BASIC WL and BASIC profiles are real.** `Facturx.CII.build/2`
   used to emit the same document whatever the profile and change only the
   guideline URN, so those three produced non-conformant files carrying a

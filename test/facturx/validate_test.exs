@@ -591,6 +591,99 @@ defmodule Facturx.ValidateTest do
     end
   end
 
+  # The decisive test for Facturx.Invoice.totals/2. BR-CO-10 to BR-CO-17 and the
+  # per-category basis rules are checked by the schematron and by nothing else —
+  # not by the XSD, and not by any assertion we could write ourselves without
+  # reimplementing the rules we are trying to verify.
+  describe "totals/2 against the business rules" do
+    @describetag :saxon
+    @describetag timeout: 300_000
+
+    setup do
+      url =
+        System.get_env("FACTURX_SAXON_URL") || raise "set FACTURX_SAXON_URL to run :saxon tests"
+
+      {:ok, endpoint: url}
+    end
+
+    test "an invoice whose every amount was derived is accepted", %{endpoint: endpoint} do
+      reference = Facturx.TestInvoice.maximal()
+
+      bare = %{
+        reference
+        | lines: Enum.map(reference.lines, &Map.delete(&1, :line_total)),
+          tax_breakdown: Enum.map(reference.tax_breakdown, &Map.drop(&1, [:basis, :calculated])),
+          totals: Map.take(reference.totals, [:prepaid, :tax_total_in_tax_currency])
+      }
+
+      assert {:ok, computed} = Facturx.totals(bare)
+      assert {:ok, xml} = Facturx.build(computed, profile: :en16931)
+
+      assert {:ok, :valid} =
+               Facturx.validate(xml,
+                 endpoint: endpoint,
+                 codedb_url: "file:///opt/facturx/FACTUR-X_EN16931_codedb.xml",
+                 receive_timeout: 120_000
+               )
+    end
+
+    test "and so is one built from prices alone, with no reference to copy",
+         %{endpoint: endpoint} do
+      d = &Decimal.new/1
+      reference = Facturx.TestInvoice.maximal()
+
+      # Rates chosen so the VAT does not land on a round cent: 5.5% of 33.33 is
+      # 1.83315, which BR-CO-17 requires rounded to 1.83. A rule about rounding
+      # is only exercised by an amount that needs rounding.
+      invoice = %{
+        reference
+        | tax_currency: nil,
+          allowances: [],
+          charges: [],
+          preceding_invoices: [],
+          business_process: "S1",
+          lines: [
+            %{
+              id: "1",
+              name: "Prestation",
+              net_price: d.("33.33"),
+              quantity: d.("3"),
+              unit: "C62",
+              vat_category: "S",
+              vat_rate: d.("5.50")
+            },
+            %{
+              id: "2",
+              name: "Fourniture",
+              net_price: d.("12.34"),
+              quantity: d.("7"),
+              unit: "C62",
+              vat_category: "S",
+              vat_rate: d.("20.00")
+            }
+          ],
+          tax_breakdown: [],
+          totals: %{}
+      }
+
+      assert {:ok, computed} = Facturx.totals(invoice)
+
+      # 99.99 at 5.5 -> 5.50 ; 86.38 at 20 -> 17.28
+      assert Decimal.equal?(computed.totals[:line_total], d.("186.37"))
+      assert Decimal.equal?(computed.totals[:tax_total], d.("22.78"))
+      assert Decimal.equal?(computed.totals[:grand_total], d.("209.15"))
+
+      assert {:ok, xml} = Facturx.build(computed, profile: :en16931)
+
+      assert {:ok, :valid} =
+               Facturx.validate(xml,
+                 endpoint: endpoint,
+                 codedb_url: "file:///opt/facturx/FACTUR-X_EN16931_codedb.xml",
+                 receive_timeout: 120_000
+               )
+    end
+  end
+
   # The three lower profiles are the ones the XSD cannot police on its own. It
   # types every party alike, so it accepts a MINIMUM buyer carrying an address
   # and a VAT registration; only the schematron says those belong to the seller

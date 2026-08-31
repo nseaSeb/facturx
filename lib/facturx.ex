@@ -87,6 +87,24 @@ defmodule Facturx do
           | {:error, term()}
   defdelegate extract(pdf), to: Extract
 
+  @doc """
+  Build an `Facturx.Invoice` from a plain map, validating and coercing amounts.
+
+  Optional — `build/2` and `generate/3` take a bare struct or map as before. See
+  `Facturx.Invoice.new/1` for what is required and why floats are refused.
+  """
+  @spec new(map()) :: {:ok, Invoice.t()} | {:error, [Invoice.error()]}
+  defdelegate new(attrs), to: Invoice
+
+  @doc """
+  Derive the line amounts, the VAT breakdown and the document totals.
+
+  Implements `BR-CO-10` to `BR-CO-17`. Values the caller supplied are kept, and a
+  disagreement is reported rather than resolved — see `Facturx.Invoice.totals/2`.
+  """
+  @spec totals(Invoice.t(), keyword()) :: {:ok, Invoice.t()} | {:error, term()}
+  defdelegate totals(invoice, opts \\ []), to: Invoice
+
   @doc "Parse a CII XML binary into an `Facturx.Invoice` struct."
   @spec parse(binary()) :: {:ok, Invoice.t()} | {:error, term()}
   defdelegate parse(xml), to: CII
