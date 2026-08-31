@@ -3,6 +3,37 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## Unreleased
+
+### Fixed
+- **A stream is no longer cut short by its own contents.** `/Length` is now
+  authoritative in both `Facturx.Embed` and `Facturx.Extract`; `endstream` and
+  `endobj` are no longer located by scanning from the front of the object.
+  Stream data does contain those bytes: deflate emits stored blocks that copy
+  their input verbatim, and an uncompressed XMP packet can simply mention the
+  word. Two failures followed, both silent until now — an embedded payload came
+  back as `{:error, :inflate_failed}`, and a base whose `/Metadata` contained the
+  keyword had its XMP truncated before promotion, so the output PDF lost the
+  Factur-X extension schema without any error being raised. Found by the new
+  property tests.
+
+### Added
+- Property-based tests (`stream_data`): the build/parse fixed point over
+  randomly pruned invoices, `Decimal` value *and* scale preservation, XMP
+  promotion idempotence and well-formedness, and PDF payload round-trips over
+  arbitrary bytes.
+- Quality gates that did not exist: Dialyzer (the public API is almost entirely
+  `@spec`-ed and nothing checked those specs), Credo, and coverage.
+- CI now runs an OTP/Elixir matrix down to the `~> 1.15` floor declared in
+  `mix.exs`, which had never been compiled.
+
+### Changed
+- `README.md` documents which PDFs the library accepts and which it refuses,
+  including the two limits no error tuple can express: encrypted PDFs are not
+  detected, and an incremental update invalidates an existing digital signature.
+- `Facturx.XSD.Cache` is documented rather than hidden, clearing the two
+  long-standing ExDoc warnings.
+
 ## [0.6.0] - 2026-08-11
 
 Full coverage of the French regulatory Flux 1 data set — **96/116 → 116/116** —

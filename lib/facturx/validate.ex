@@ -153,6 +153,7 @@ defmodule Facturx.Validate do
 
     # Indirect dispatch: `:req` is an optional dependency, so referencing it via
     # apply/3 avoids a compile-time warning in projects that don't pull it in.
+    # credo:disable-for-next-line Credo.Check.Refactor.Apply
     case apply(Req, :post, [url, req_opts]) do
       {:ok, %{status: 200, body: svrl}} -> interpret(svrl)
       {:ok, %{status: status}} -> {:error, {:saxon_http_error, status}}

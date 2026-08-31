@@ -22,8 +22,12 @@ projects, and to fill the gap on Hex.pm.
 | Parse CII XML into a struct | `Facturx.CII` | none (pure Elixir) |
 | Extract the embedded XML from a PDF | `Facturx.Extract` | none (pure Elixir) |
 | Embed XML into an existing PDF/A-3 | `Facturx.Embed` | none (pure Elixir) |
-| Validate against EN 16931 XSD | `Facturx.XSD` | none (pure Elixir, OTP `:xmerl_xsd`) |
-| Validate against EN 16931 Schematron | `Facturx.Validate` | **optional** — `:req` + a Saxon HTTP endpoint |
+| Validate against the CII XSD | `Facturx.XSD` | none (pure Elixir, OTP `:xmerl_xsd`) |
+| Validate against the Schematron | `Facturx.Validate` | **optional** — `:req` + a Saxon HTTP endpoint |
+
+Both validators ship schemas for the `:en16931` and `:extended` profiles; the
+other three return `{:error, {:xsd_not_bundled, profile}}` /
+`{:error, {:schematron_not_bundled, profile}}`.
 
 The EN 16931 Schematron ships compiled in `priv/schematron/`. `validate/2` posts
 the XML + XSLT to a Saxon server and reads back the SVRL report. The XSLT resolves
@@ -41,12 +45,39 @@ Python library does):
   default, self-hosted recommended in production for privacy). It is opt-in and
   disabled by default.
 
+### Which PDFs the library accepts
+
+`Facturx.Embed` reads and writes classic cross-reference **tables**, and works by
+incremental update — the base file is preserved byte for byte and the new objects
+are appended. What that rules out, each with its own error rather than a silent
+wrong answer:
+
+| Input | Result |
+|---|---|
+| Cross-reference **stream** (`/Type /XRef`, PDF 1.5+) | `{:error, :xref_streams_unsupported}`, and `{:error, :object_streams_unsupported}` on extraction |
+| Object streams (`/ObjStm`) | same |
+| PDF/A-1 | `{:error, {:unsupported_pdfa, "PDF/A-1"}}` — the standard forbids embedded files |
+| Not PDF/A at all | `{:error, :not_pdfa}` |
+| Already carries `/EmbeddedFiles` | `{:error, :already_has_embedded_files}` |
+| Indirect `/AF` or `/Names` in the catalog | `{:error, :af_indirect_unsupported}` / `{:error, :names_indirect_unsupported}` |
+
+Two further points that no error can express:
+
+- **Encrypted PDFs are not supported.** Nothing detects `/Encrypt`, so the
+  outcome is a failure to inflate or meaningless bytes. Decrypt upstream.
+- **An incremental update invalidates an existing digital signature.** That is
+  inherent to appending to a signed file; sign after embedding, not before.
+
+`Facturx.Extract` is deliberately more permissive than `Facturx.Embed`: it reads
+the attachment out of any PDF, PDF/A or not, because reading cannot damage the
+document.
+
 ## Installation
 
 ```elixir
 def deps do
   [
-    {:facturx, "~> 0.5"},
+    {:facturx, "~> 0.6"},
     # only if you use Facturx.validate/2:
     {:req, "~> 0.5"}
   ]

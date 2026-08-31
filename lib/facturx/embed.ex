@@ -276,34 +276,52 @@ defmodule Facturx.Embed do
          dict = balanced_dict(pdf, pos),
          {s, _} <- :binary.match(pdf, "stream", scope: {pos, byte_size(pdf) - pos}),
          data_start = skip_eol(pdf, s + 6),
-         {e, _} <-
-           :binary.match(pdf, "endstream", scope: {data_start, byte_size(pdf) - data_start}) do
-      raw = stream_data(pdf, dict, data_start, e)
+         {:ok, raw} <- stream_data(pdf, dict, data_start) do
       if String.contains?(dict, "/FlateDecode"), do: inflate(raw), else: {:ok, raw}
     else
       _ -> {:error, {:no_stream, num}}
     end
   end
 
-  # Prefer `/Length`, which is where the stream actually stops. Guessing instead
-  # at the EOL that precedes `endstream` eats a real byte as soon as the data
-  # itself ends with CR or LF — for a deflated `/Metadata` that is roughly one
-  # base in 256, and the embedding then fails outright on `:inflate_failed`.
+  # `/Length` is where the stream actually stops, and it is authoritative:
+  # `endstream` cannot be located by scanning, because stream data does contain
+  # those bytes — an uncompressed XMP packet mentioning the word, a deflate
+  # stored block copying its input verbatim. Guessing at the EOL that precedes
+  # it also eats a real byte as soon as the data ends with CR or LF: for a
+  # deflated `/Metadata` that is roughly one base in 256, and the embedding then
+  # fails outright on `:inflate_failed`.
   #
-  # A `/Length` is only taken once it lands on `endstream` with nothing but an
-  # EOL in between: producers do get it wrong, and a wrong length would silently
-  # truncate where the scan would have worked.
-  defp stream_data(pdf, dict, data_start, e) do
+  # The length is still checked against `endstream` before being used: producers
+  # do get it wrong, and a wrong length would silently truncate where the scan
+  # would have worked.
+  defp stream_data(pdf, dict, data_start) do
     # The `\b` matters: without it the engine backtracks into the digits when
     # the lookahead fires, so `/Length 120 0 R` captures "12" instead of failing.
     with [_, n] <- Regex.run(~r{/Length\s+(\d+)\b(?!\s*\d+\s+R)}, dict),
          len = String.to_integer(n),
-         true <- len <= e - data_start,
-         true <-
-           binary_part(pdf, data_start + len, e - data_start - len) in ["", "\n", "\r\n", "\r"] do
-      binary_part(pdf, data_start, len)
+         true <- data_start + len <= byte_size(pdf),
+         tail = binary_part(pdf, data_start + len, byte_size(pdf) - data_start - len),
+         true <- eol_then_endstream?(tail) do
+      {:ok, binary_part(pdf, data_start, len)}
     else
-      _ -> binary_part(pdf, data_start, strip_eol(pdf, data_start, e) - data_start)
+      _ -> scan_to_endstream(pdf, data_start)
+    end
+  end
+
+  defp eol_then_endstream?(<<"\r\n", rest::binary>>), do: String.starts_with?(rest, "endstream")
+
+  defp eol_then_endstream?(<<c, rest::binary>>) when c in [?\r, ?\n],
+    do: String.starts_with?(rest, "endstream")
+
+  defp eol_then_endstream?(rest), do: String.starts_with?(rest, "endstream")
+
+  # No usable `/Length`. Unlike `Facturx.Extract`, which holds one object's
+  # bytes and can take the last `endstream` in them, here the scope is the whole
+  # file — so the first one after the data is the only defensible guess.
+  defp scan_to_endstream(pdf, data_start) do
+    case :binary.match(pdf, "endstream", scope: {data_start, byte_size(pdf) - data_start}) do
+      {e, _} -> {:ok, binary_part(pdf, data_start, strip_eol(pdf, data_start, e) - data_start)}
+      :nomatch -> :error
     end
   end
 

@@ -8,6 +8,7 @@ defmodule Facturx.PdfRoundtripTest do
   """
 
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Facturx.TestPDF
 
@@ -95,6 +96,67 @@ defmodule Facturx.PdfRoundtripTest do
       assert {:ok, out} = Facturx.generate(base, @xml)
       assert out =~ "<pdfaid:part>3</pdfaid:part>"
       assert {:ok, %{xml: @xml}} = Facturx.extract(out)
+    end
+  end
+
+  describe "stream length, over arbitrary payloads" do
+    # The two tests above pin the CR and LF cases with a payload chosen for it.
+    # This covers the same code from the other side: whatever the deflate stream
+    # happens to end on, and whatever the payload contains — `endstream` and
+    # `endobj` included, which compression hides but a naive scan would not —
+    # what comes out is what went in.
+    defp payload do
+      gen all(body <- string(:printable, max_length: 300)) do
+        ~s(<?xml version="1.0" encoding="UTF-8"?><doc>) <> body <> "</doc>"
+      end
+    end
+
+    property "any payload comes back byte-identical" do
+      base = TestPDF.base()
+
+      # More runs than the default 100: the failing tail byte occurs about once
+      # in 256 draws, so 100 would miss it more often than not.
+      check all(xml <- payload(), max_runs: 400) do
+        assert {:ok, out} = Facturx.generate(base, xml)
+        assert {:ok, %{xml: ^xml}} = Facturx.extract(out)
+      end
+    end
+
+    property "a payload containing PDF keywords is not cut short by them" do
+      base = TestPDF.base()
+
+      check all(
+              body <- string(:printable, max_length: 80),
+              keyword <- member_of(["endstream", "endobj", "stream", ">>", "%%EOF"])
+            ) do
+        xml = ~s(<?xml version="1.0" encoding="UTF-8"?><doc>) <> body <> keyword <> "</doc>"
+
+        assert {:ok, out} = Facturx.generate(base, xml)
+        assert {:ok, %{xml: ^xml}} = Facturx.extract(out)
+      end
+    end
+  end
+
+  describe "streams whose data contains PDF keywords" do
+    # `endstream` cannot be found by scanning: stream data contains those bytes.
+    # Deflate emits stored blocks that copy their input verbatim, and an
+    # uncompressed XMP packet can simply mention the word. Both cases used to
+    # cut the stream short — silently, since a shorter slice still parses.
+    test "an embedded payload whose deflate stream contains \"endstream\" round-trips" do
+      xml = xml_deflating_with("endstream")
+
+      {:ok, out} = Facturx.generate(TestPDF.base(), xml)
+      assert {:ok, %{xml: ^xml}} = Facturx.extract(out)
+    end
+
+    test "a base whose uncompressed /Metadata contains \"endstream\" keeps its XMP whole" do
+      base = TestPDF.base(title: "Rapport endstream 2026")
+
+      assert {:ok, out} = Facturx.generate(base, @xml)
+      # The promotion read the whole packet, not the slice before the keyword.
+      assert out =~ "<pdfaid:part>3</pdfaid:part>"
+      assert out =~ "Rapport endstream 2026"
+      assert out =~ "urn:factur-x:pdfa:CrossIndustryDocument:invoice:1p0#"
     end
   end
 
@@ -246,6 +308,17 @@ defmodule Facturx.PdfRoundtripTest do
     |> Regex.scan(pdf)
     |> List.last()
     |> Enum.at(1)
+  end
+
+  # The first payload whose deflate stream contains `needle` literally. Deflate
+  # falls back to stored blocks on incompressible input, so high-entropy filler
+  # is what makes this findable at all.
+  defp xml_deflating_with(needle) do
+    Enum.find_value(1..200, fn n ->
+      filler = for i <- 1..n, into: <<>>, do: :crypto.hash(:sha256, <<i::32, n::32>>)
+      xml = "<a>" <> filler <> needle <> "</a>"
+      if :binary.match(:zlib.compress(xml), needle) != :nomatch, do: xml
+    end) || flunk("no payload found whose deflate stream contains #{needle}")
   end
 
   # The first payload whose deflate stream ends on `byte`. Searched rather than

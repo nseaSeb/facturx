@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: hex
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+
+  # The Saxon image is pinned by digest on purpose: an unpinned upstream tag once
+  # turned the schematron job red without a line of this repository changing.
+  # Dependabot is what keeps that pin from going stale silently.
+  - package-ecosystem: docker
+    directory: "/docker"
+    schedule:
+      interval: monthly

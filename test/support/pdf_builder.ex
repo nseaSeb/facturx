@@ -67,7 +67,7 @@ defmodule Facturx.TestPDF do
       for n <- 0..(size - 1), into: <<>> do
         case Map.fetch(offsets, n) do
           {:ok, offset} -> <<1, offset::32, 0::16>>
-          :error -> <<0, 0::32, 65535::16>>
+          :error -> <<0, 0::32, 65_535::16>>
         end
       end
 

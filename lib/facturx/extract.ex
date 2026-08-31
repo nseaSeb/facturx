@@ -10,6 +10,11 @@ defmodule Facturx.Extract do
   Typst + factur-x toolchains). Object streams / cross-reference streams are not
   yet handled — see `docs/adr/0001-perimetre-et-architecture.md`.
 
+  Unlike `Facturx.Embed`, this module does not require its input to be PDF/A, and
+  does not check: reading an attachment cannot damage the document, so refusing a
+  file it can in fact read would only be in the caller's way. The library will
+  therefore read from PDFs it would decline to write to.
+
   ## Memory note (BEAM refc binaries)
 
   A PDF is a large binary (> 64 bytes → refc binary). Slicing it yields
@@ -63,6 +68,11 @@ defmodule Facturx.Extract do
     String.contains?(pdf, "/ObjStm") or Regex.match?(~r|/Type\s*/XRef|, pdf)
   end
 
+  # A direct `/Length N`, never the indirect `/Length N G R` form. The `\b`
+  # matters: without it the engine backtracks into the digits when the lookahead
+  # fires, so `/Length 120 0 R` captures "12" instead of failing.
+  @direct_length ~r{/Length\s+(\d+)\b(?!\s*\d+\s+R)}
+
   # --- object index (classic xref, brute-force recovery) -------------------
 
   # Map {num, gen} => object body (bytes between `obj` and `endobj`). Scanning
@@ -75,14 +85,50 @@ defmodule Facturx.Extract do
       [num, gen] = header |> String.split() |> Enum.take(2) |> Enum.map(&String.to_integer/1)
       body_start = s + len
 
-      body =
-        case :binary.match(pdf, "endobj", scope: {body_start, byte_size(pdf) - body_start}) do
-          {e, _} -> binary_part(pdf, body_start, e - body_start)
-          :nomatch -> binary_part(pdf, body_start, byte_size(pdf) - body_start)
-        end
-
-      Map.put(acc, {num, gen}, body)
+      Map.put(acc, {num, gen}, object_body(pdf, body_start))
     end)
+  end
+
+  # Bytes from `body_start` to the object's `endobj`.
+  #
+  # Not simply the first `endobj`: a compressed stream is arbitrary bytes, and
+  # deflate output contains the literal "endobj" or "endstream" often enough to
+  # matter (a stored block copies its input verbatim). So when the object holds
+  # a stream whose `/Length` is direct, the search resumes past the stream data,
+  # where a keyword can only be the real one.
+  defp object_body(pdf, body_start) do
+    rest = binary_part(pdf, body_start, byte_size(pdf) - body_start)
+
+    case :binary.match(rest, "endobj") do
+      :nomatch ->
+        rest
+
+      {naive_end, _} ->
+        from = stream_data_end(rest, naive_end)
+
+        case :binary.match(rest, "endobj", scope: {from, byte_size(rest) - from}) do
+          {e, _} -> binary_part(rest, 0, e)
+          :nomatch -> binary_part(rest, 0, naive_end)
+        end
+    end
+  end
+
+  # Offset just past the stream data of `obj`, or 0 when there is nothing to
+  # skip — no `stream` keyword before `naive_end`, or no usable `/Length` to say
+  # where the data stops.
+  #
+  # The `scope:` is not an optimisation detail. `obj` runs to the end of the
+  # file, so an unbounded search would scan on to the *next* object's stream, or
+  # to EOF for a file whose streams all sit at the front — once per object,
+  # making the index quadratic in the file size.
+  defp stream_data_end(obj, naive_end) do
+    with {s, _} <- :binary.match(obj, "stream", scope: {0, naive_end}),
+         data_start = skip_eol(obj, s + 6),
+         {:ok, len} <- declared_length(binary_part(obj, 0, s), obj, data_start) do
+      data_start + len
+    else
+      _ -> 0
+    end
   end
 
   defp resolve(objects, {num, gen}) do
@@ -142,34 +188,53 @@ defmodule Facturx.Extract do
   defp stream_bytes(obj) do
     with {s, _} <- :binary.match(obj, "stream"),
          data_start = skip_eol(obj, s + 6),
-         {e, _} <-
-           :binary.match(obj, "endstream", scope: {data_start, byte_size(obj) - data_start}) do
-      {:ok, stream_data(obj, binary_part(obj, 0, s), data_start, e)}
+         {:ok, len} <- declared_length(binary_part(obj, 0, s), obj, data_start) do
+      {:ok, binary_part(obj, data_start, len)}
     else
+      {:error, :no_length} -> scan_to_endstream(obj)
       _ -> {:error, :no_stream}
     end
   end
 
-  # Prefer `/Length`, which is where the stream actually stops. Guessing instead
-  # at the EOL that precedes `endstream` eats a real byte as soon as the data
-  # itself ends with CR or LF — for a deflate stream that is roughly one
-  # document in 256, the last byte being the low byte of the adler32, and what
-  # comes out no longer inflates.
+  # `/Length` is where the stream actually stops, and it is authoritative:
+  # `endstream` cannot be located by scanning, because deflate output contains
+  # those bytes often enough to matter. Guessing at the EOL that precedes it
+  # also eats a real byte as soon as the data ends with CR or LF — for a deflate
+  # stream that is roughly one document in 256, the last byte being the low byte
+  # of the adler32, and what comes out no longer inflates.
   #
-  # A `/Length` is only taken once it lands on `endstream` with nothing but an
-  # EOL in between: producers do get it wrong, and a wrong length would silently
-  # truncate where the scan would have worked.
-  defp stream_data(obj, dict, data_start, e) do
-    # The `\b` matters: without it the engine backtracks into the digits when
-    # the lookahead fires, so `/Length 120 0 R` captures "12" instead of failing.
-    with [_, n] <- Regex.run(~r{/Length\s+(\d+)\b(?!\s*\d+\s+R)}, dict),
+  # The length is still checked against `endstream` before being used: producers
+  # do get it wrong, and a wrong length would silently truncate where the scan
+  # would have worked.
+  defp declared_length(dict, obj, data_start) do
+    with [_, n] <- Regex.run(@direct_length, dict),
          len = String.to_integer(n),
-         true <- len <= e - data_start,
-         true <-
-           binary_part(obj, data_start + len, e - data_start - len) in ["", "\n", "\r\n", "\r"] do
-      binary_part(obj, data_start, len)
+         true <- data_start + len <= byte_size(obj),
+         tail = binary_part(obj, data_start + len, byte_size(obj) - data_start - len),
+         true <- eol_then_endstream?(tail) do
+      {:ok, len}
     else
-      _ -> binary_part(obj, data_start, strip_trailing_eol(obj, data_start, e) - data_start)
+      _ -> {:error, :no_length}
+    end
+  end
+
+  defp eol_then_endstream?(<<"\r\n", rest::binary>>), do: String.starts_with?(rest, "endstream")
+
+  defp eol_then_endstream?(<<c, rest::binary>>) when c in [?\r, ?\n],
+    do: String.starts_with?(rest, "endstream")
+
+  defp eol_then_endstream?(rest), do: String.starts_with?(rest, "endstream")
+
+  # No usable `/Length`: fall back to scanning, and take the **last**
+  # `endstream` of the object rather than the first — an earlier one is data.
+  defp scan_to_endstream(obj) do
+    with {s, _} <- :binary.match(obj, "stream"),
+         data_start = skip_eol(obj, s + 6),
+         scope = {data_start, byte_size(obj) - data_start},
+         {e, _} <- obj |> :binary.matches("endstream", scope: scope) |> List.last() do
+      {:ok, binary_part(obj, data_start, strip_trailing_eol(obj, data_start, e) - data_start)}
+    else
+      _ -> {:error, :no_stream}
     end
   end
 
