@@ -398,6 +398,29 @@ defmodule Facturx.PdfRoundtripTest do
       assert Facturx.extract(pdf) == {:error, :encrypted_pdf_unsupported}
     end
 
+    test "an encrypted PDF 1.5+ file is refused too" do
+      # The trailer of a cross-reference-stream file is the stream's own
+      # dictionary — there is no `trailer` keyword to read. Embed writes to this
+      # shape now, so a guard that only knew the classic form would have appended
+      # plaintext objects into an encrypted document.
+      base = TestPDF.xref_stream_base()
+      pdf = String.replace(base, "/Type /XRef", "/Type /XRef /Encrypt 9 0 R")
+
+      assert Facturx.PDF.encrypted?(pdf)
+      assert Facturx.generate(pdf, @xml) == {:error, :encrypted_pdf_unsupported}
+      assert Facturx.extract(pdf) == {:error, :encrypted_pdf_unsupported}
+    end
+
+    test "a classic base using CR-only line endings is still embeddable" do
+      # Legal, and what strip_trailing_eol/skip_eol are written to tolerate. A
+      # detector anchored on "\ntrailer" would not see this file's trailer and
+      # would refuse a document the library has always handled.
+      base = TestPDF.base() |> String.replace("\ntrailer", "\rtrailer")
+
+      assert {:ok, out} = Facturx.generate(base, @xml)
+      assert {:ok, %{xml: @xml}} = Facturx.extract(out)
+    end
+
     test "a file decrypted by an incremental update is readable again" do
       # Only the *last* trailer is the document's. An earlier one belongs to a
       # revision this file has superseded, so an /Encrypt left behind there no

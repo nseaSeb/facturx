@@ -96,6 +96,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   anything here can see it. Accepting it would record the drift and call it
   validated.
 
+  `totals/2` refuses rather than guesses. An invoice with **no lines** returns
+  `{:error, :no_lines}`: everything it derives is founded on the line amounts, and
+  deriving zero would be a lie — a BASIC WL or MINIMUM invoice carries no lines
+  and still has a VAT liability. A breakdown entry matching no line returns
+  `{:error, {:orphan_tax_breakdown, …}}` rather than being dropped. An amount
+  that is not a `Decimal` returns `{:error, {:not_a_decimal, path, value}}`,
+  because this module both adds and sorts them and coercing quietly is the float
+  mistake again.
+
   `new/1` also requires `:vat_category` and `:vat_rate` on every line (BR-CO-4).
   Without them a line cannot be placed in any VAT breakdown group: it would count
   towards the invoice total while contributing no VAT, which is a wrong invoice

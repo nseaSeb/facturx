@@ -17,7 +17,9 @@ defmodule Facturx.Totals do
 
   @spec compute(Invoice.t(), keyword()) :: {:ok, Invoice.t()} | {:error, term()}
   def compute(%Invoice{} = inv, opts \\ []) do
-    with :ok <- all_finite(inv) do
+    with :ok <- has_lines(inv),
+         :ok <- all_finite(inv),
+         :ok <- no_orphan_breakdown(inv) do
       lines = Enum.map(inv.lines, &derive_line/1)
       breakdown = breakdown(lines, inv)
       totals = document_totals(lines, breakdown, inv)
@@ -34,6 +36,36 @@ defmodule Facturx.Totals do
   defp reconcile(_inv, computed, _diffs, true), do: {:ok, computed}
   defp reconcile(_inv, _computed, diffs, false), do: {:error, {:totals_mismatch, diffs}}
 
+  # Everything here is founded on the line amounts: BT-106 sums them, BT-109 and
+  # BT-112 follow from it, and each BT-116 groups them. With no lines there is
+  # nothing to derive, and deriving zero would be a lie — a BASIC WL or MINIMUM
+  # invoice carries no lines and still has a VAT liability. Such a caller states
+  # their totals; they do not ask for them.
+  defp has_lines(%Invoice{lines: []}), do: {:error, :no_lines}
+  defp has_lines(_inv), do: :ok
+
+  # A breakdown entry whose {category, rate} matches no line and no document
+  # allowance or charge. It cannot be completed — nothing implies its taxable
+  # amount — and dropping it would remove a declared VAT liability from the
+  # document without a word.
+  defp no_orphan_breakdown(inv) do
+    groups =
+      MapSet.new(
+        Enum.map(inv.lines, &vat_key/1) ++
+          Enum.map(inv.allowances ++ inv.charges, &vat_key/1)
+      )
+
+    inv.tax_breakdown
+    |> Enum.map(&tax_key/1)
+    |> Enum.reject(&(&1 == nil or MapSet.member?(groups, &1)))
+    |> case do
+      [] -> :ok
+      orphans -> {:error, {:orphan_tax_breakdown, Enum.map(orphans, &readable/1)}}
+    end
+  end
+
+  defp readable({category, rate}), do: {category, Decimal.to_string(rate, :normal)}
+
   # --- refusing what cannot be added safely ---------------------------------
 
   # `Decimal` represents NaN and Infinity with a `:NaN` or `:inf` coefficient.
@@ -41,19 +73,26 @@ defmodule Facturx.Totals do
   # as `<ram:GrandTotalAmount>NaN</ram:GrandTotalAmount>`. This module is the
   # first place the library does arithmetic of its own, so it is the first place
   # that has to say no.
+  # Every amount must be an actual, finite `Decimal`. `compute/2` takes any
+  # `t:Facturx.Invoice.t/0`, not only one `Facturx.Invoice.new/1` built, so a
+  # hand-written struct may carry an integer or a string where a rate belongs —
+  # and this module both adds and sorts them. Coercing here would be the float
+  # mistake again: convert quietly and call it validated.
   defp all_finite(inv) do
     inv
     |> Map.from_struct()
     |> Invoice.amount_paths()
-    |> Enum.find(fn {_path, value} -> not finite?(value) end)
+    |> Enum.find(fn {_path, value} -> not decimal?(value) end)
     |> case do
       nil -> :ok
-      {path, value} -> {:error, {:not_a_finite_amount, path, value}}
+      {path, %Decimal{} = value} -> {:error, {:not_a_finite_amount, path, value}}
+      {path, value} -> {:error, {:not_a_decimal, path, value}}
     end
   end
 
-  defp finite?(%Decimal{coef: coef}), do: is_integer(coef)
-  defp finite?(_other), do: true
+  defp decimal?(%Decimal{coef: coef}), do: is_integer(coef)
+  defp decimal?(nil), do: true
+  defp decimal?(_other), do: false
 
   # --- lines -----------------------------------------------------------------
 
@@ -122,7 +161,8 @@ defmodule Facturx.Totals do
       })
     end)
     # Deterministic order, so the same invoice always builds the same bytes.
-    |> Enum.sort_by(&{&1[:category], Decimal.to_float(&1[:rate])})
+    |> Enum.sort_by(& &1[:category])
+    |> Enum.sort_by(& &1[:rate], &(Decimal.compare(&1, &2) != :gt))
   end
 
   # BT-117 = BT-116 x BT-119 / 100, rounded to the cent (BR-CO-17).
@@ -207,7 +247,7 @@ defmodule Facturx.Totals do
           do: {[:lines, i, :line_total], given[:line_total], derived[:line_total]}
 
     taxes =
-      for given <- inv.tax_breakdown,
+      for {given, i} <- Enum.with_index(inv.tax_breakdown),
           key = tax_key(given),
           key != nil,
           match = Enum.find(computed.tax_breakdown, &(tax_key(&1) == key)),
@@ -215,7 +255,7 @@ defmodule Facturx.Totals do
           field <- [:basis, :calculated],
           given[field] != nil,
           not Decimal.equal?(given[field], match[field]),
-          do: {[:tax_breakdown, elem(key, 0), field], given[field], match[field]}
+          do: {[:tax_breakdown, i, field], given[field], match[field]}
 
     totals ++ lines ++ taxes
   end

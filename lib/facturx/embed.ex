@@ -76,7 +76,10 @@ defmodule Facturx.Embed do
   # the thing a strict PDF/A reader is entitled to reject.
   defp xref_shape(pdf) do
     cond do
-      String.contains?(pdf, "\ntrailer") -> {:ok, :table}
+      # `String.contains?`, not a `\n`-anchored match: a classic file may use
+      # CR-only line endings, and this has to agree with `trailer_dict/3`, which
+      # locates the dictionary by the bare keyword.
+      String.contains?(pdf, "trailer") -> {:ok, :table}
       Regex.match?(~r|/Type\s*/XRef|, pdf) -> {:ok, :stream}
       true -> {:error, :no_trailer}
     end

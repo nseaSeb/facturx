@@ -105,10 +105,70 @@ defmodule Facturx.InvoiceTest do
       end
     end
 
+    test "a collection that is not one is an error, not an exception" do
+      # new/1 promises every problem back as data, and the coercion walk runs
+      # before the shape checks — so it has to survive what it is walking.
+      assert {:error, errors} = Invoice.new(minimal_attrs(%{lines: "abc"}))
+      assert {[:lines], :not_a_list} in errors
+
+      assert {:error, errors} = Invoice.new(minimal_attrs(%{lines: ["x"]}))
+      assert {[:lines, 0], :not_a_map} in errors
+
+      assert {:error, errors} = Invoice.new(minimal_attrs(%{totals: "none"}))
+      assert {[:totals], :not_a_map} in errors
+    end
+
+    test "a currency that is not three letters is refused" do
+      for bad <- ["123", "---", "eur", "EURO", "EU", "€", 978] do
+        assert {:error, errors} = Invoice.new(minimal_attrs(%{currency: bad}))
+
+        assert {[:currency], :not_a_currency_code} in errors,
+               "#{inspect(bad)} was accepted as a currency"
+      end
+    end
+
     test "a string that is not a number is refused rather than read as zero" do
       attrs = minimal_attrs(%{totals: %{grand_total: "314,00"}})
 
       assert {:error, [{[:totals, :grand_total], :not_a_number}]} = Invoice.new(attrs)
+    end
+  end
+
+  describe "totals/2 refuses what it cannot derive" do
+    # Everything totals/2 computes is founded on the line amounts. With no lines
+    # there is nothing to derive, and deriving zero would be a lie: a BASIC WL or
+    # MINIMUM invoice carries no lines and still has a VAT liability. Before this,
+    # such an invoice came back {:ok, …} with its declared breakdown emptied and
+    # a grand total of 0.00.
+    test "an invoice with no lines is an error, not a zero total" do
+      inv = %{priced([{"50.00", "S", "20.00"}]) | lines: []}
+
+      assert Invoice.totals(inv) == {:error, :no_lines}
+    end
+
+    test "a breakdown entry matching no line is an error, not a dropped liability" do
+      inv =
+        %{
+          priced([{"50.00", "S", "20.00"}])
+          | tax_breakdown: [
+              %{category: "E", rate: d("0.00"), basis: d("30.00"), calculated: d("0.00")}
+            ]
+        }
+
+      assert {:error, {:orphan_tax_breakdown, [{"E", "0"}]}} = Invoice.totals(inv)
+    end
+
+    test "an amount that is not a Decimal is refused rather than coerced" do
+      # compute/2 takes any Invoice, not only one new/1 built, and it both adds
+      # and sorts these. A rate written `20` used to raise out of the sort.
+      inv = %{
+        priced([{"50.00", "S", "20.00"}])
+        | lines: [
+            %{id: "1", vat_category: "S", vat_rate: 20, net_price: d("1.00"), quantity: d("1")}
+          ]
+      }
+
+      assert {:error, {:not_a_decimal, [:lines, 0, :vat_rate], 20}} = Invoice.totals(inv)
     end
   end
 
@@ -247,6 +307,23 @@ defmodule Facturx.InvoiceTest do
 
       assert Decimal.equal?(given, d("999.00"))
       assert Decimal.equal?(computed, d("314.00"))
+    end
+
+    test "a divergence path uses an index, like every other path" do
+      inv = stripped(TestInvoice.maximal())
+
+      wrong = %{
+        inv
+        | tax_breakdown: List.update_at(inv.tax_breakdown, 1, &Map.put(&1, :basis, d("1.00")))
+      }
+
+      assert {:error, {:totals_mismatch, diffs}} = Invoice.totals(wrong)
+
+      # `[:tax_breakdown, 1, :basis]`, not `[:tax_breakdown, "S", :basis]`: the
+      # Invoice.error typedoc says `[atom() | non_neg_integer()]`, and a caller
+      # feeding these to get_in/put_in needs the index.
+      assert Enum.any?(diffs, fn {path, _, _} -> path == [:tax_breakdown, 1, :basis] end),
+             inspect(Enum.map(diffs, &elem(&1, 0)))
     end
 
     test "overwrite: true takes the computed figures" do

@@ -95,29 +95,46 @@ defmodule Facturx.PDF do
   Neither module can read an encrypted file, and neither used to notice: the
   outcome was a failed inflate or meaningless bytes rather than an error.
 
-  Only the **last** trailer dictionary is read, and for two reasons. `/Encrypt`
-  is meaningful in a trailer and nowhere else, so scanning the whole file would
-  refuse documents that merely contain those bytes — an uncompressed XMP packet
-  quoting the PDF spec, a content stream. And the last trailer is the document's:
-  earlier ones belong to revisions this file has superseded, so a file decrypted
-  by an incremental update still carries an `/Encrypt` trailer that no longer
-  applies, and reading it would refuse a file that is perfectly readable.
+  Only the document's own trailer is read, in whichever of the two forms it
+  takes: the dictionary after the last `trailer` keyword, or — for a PDF 1.5+
+  file, which has no such keyword — the cross-reference stream that `startxref`
+  points at, whose dictionary carries the same keys.
 
-  A file whose cross-reference is a stream has no `trailer` keyword at all and
-  carries `/Encrypt` in the XRef stream dictionary instead. That shape is out of
-  reach here, and both callers refuse it for their own reasons first.
+  Both, and nothing else. `/Encrypt` is meaningful in a trailer and nowhere else,
+  so scanning the whole file would refuse documents that merely contain those
+  bytes: an uncompressed XMP packet quoting the PDF spec, a content stream. And
+  the *last* one is the document's — earlier ones belong to revisions this file
+  has superseded, so a file decrypted by an incremental update still carries an
+  `/Encrypt` trailer that no longer applies, and honouring it would refuse a file
+  that is perfectly readable.
   """
   @spec encrypted?(binary()) :: boolean()
   def encrypted?(pdf) do
-    case :binary.matches(pdf, "trailer") |> List.last() do
-      nil ->
-        false
+    Enum.any?(trailer_dicts(pdf), &Regex.match?(@encrypt, &1))
+  end
 
-      {pos, _} ->
-        case balanced_dict(pdf, pos) do
-          {:ok, dict} -> Regex.match?(@encrypt, dict)
-          {:error, _} -> false
-        end
+  defp trailer_dicts(pdf) do
+    positions =
+      [last_position(pdf, "trailer"), startxref_offset(pdf)]
+      |> Enum.reject(&(is_nil(&1) or &1 >= byte_size(pdf)))
+
+    for pos <- positions, {:ok, dict} <- [balanced_dict(pdf, pos)], do: dict
+  end
+
+  defp last_position(pdf, needle) do
+    case pdf |> :binary.matches(needle) |> List.last() do
+      {pos, _} -> pos
+      nil -> nil
+    end
+  end
+
+  # Where `startxref` points: the cross-reference stream object in a PDF 1.5+
+  # file, and the `xref` table in a classic one — where the dictionary that
+  # follows is the trailer, so reading it changes nothing.
+  defp startxref_offset(pdf) do
+    case Regex.scan(~r/startxref\s+(\d+)/, pdf) |> List.last() do
+      [_, n] -> String.to_integer(n)
+      _ -> nil
     end
   end
 

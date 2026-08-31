@@ -463,7 +463,37 @@ defmodule Facturx.Invoice do
       currency(attrs) ++
       date(attrs, :issue_date) ++
       date(attrs, :due_date) ++
+      collections(attrs) ++
       line_vat(attrs)
+  end
+
+  # `new/1` promises every problem back as data, so a `:lines` that is a string,
+  # or a list holding one, must be an error rather than a `Protocol.UndefinedError`
+  # raised out of the coercion walk.
+  @collections [:lines, :allowances, :charges, :tax_breakdown, :notes, :payment_means]
+
+  defp collections(attrs) do
+    Enum.flat_map(@collections, &collection(attrs, &1)) ++ totals_shape(attrs)
+  end
+
+  defp collection(attrs, key) do
+    case Map.get(attrs, key) do
+      nil -> []
+      list when is_list(list) -> non_maps(list, key)
+      _ -> [{[key], :not_a_list}]
+    end
+  end
+
+  defp non_maps(list, key) do
+    for {entry, i} <- Enum.with_index(list), not is_map(entry), do: {[key, i], :not_a_map}
+  end
+
+  defp totals_shape(attrs) do
+    case Map.get(attrs, :totals) do
+      nil -> []
+      m when is_map(m) -> []
+      _ -> [{[:totals], :not_a_map}]
+    end
   end
 
   # BT-151 and BT-152 are required on every line (BR-CO-4), and without them a
@@ -471,7 +501,7 @@ defmodule Facturx.Invoice do
   # total without contributing any VAT, which is a wrong invoice rather than an
   # incomplete one.
   defp line_vat(attrs) do
-    for {line, i} <- Enum.with_index(Map.get(attrs, :lines) || []),
+    for {line, i} <- indexed(attrs, :lines),
         is_map(line),
         {field, key} <- [{:vat_category, :vat_category}, {:vat_rate, :vat_rate}],
         blank?(line[key]),
@@ -486,13 +516,17 @@ defmodule Facturx.Invoice do
     end
   end
 
+  # BT-5 is an ISO 4217 alphabetic code: three letters, upper case. The list
+  # itself is not copied here — the schematron already carries it, and a second
+  # copy in Elixir would only be something to drift — but "123" and "---" are not
+  # currencies in any list, and catching them here is the point of `new/1`.
   defp currency(attrs) do
     case Map.get(attrs, :currency) do
       nil ->
         []
 
-      <<_::binary-size(3)>> = c ->
-        if c == String.upcase(c), do: [], else: [{[:currency], :not_a_currency_code}]
+      code when is_binary(code) ->
+        if code =~ ~r/^[A-Z]{3}$/, do: [], else: [{[:currency], :not_a_currency_code}]
 
       _ ->
         [{[:currency], :not_a_currency_code}]
@@ -549,19 +583,21 @@ defmodule Facturx.Invoice do
     totals = for k <- @totals_amounts, v = get_in_map(attrs, [:totals, k]), do: {[:totals, k], v}
 
     lines =
-      for {line, i} <- Enum.with_index(Map.get(attrs, :lines) || []),
+      for {line, i} <- indexed(attrs, :lines),
           entry <- line_paths(line, i),
           do: entry
 
     charges =
-      for {group, key} <- [{:allowances, :allowances}, {:charges, :charges}],
-          {ac, i} <- Enum.with_index(Map.get(attrs, group) || []),
+      for group <- [:allowances, :charges],
+          {ac, i} <- indexed(attrs, group),
+          is_map(ac),
           k <- @charge_amounts,
           v = ac[k],
-          do: {[key, i, k], v}
+          do: {[group, i, k], v}
 
     taxes =
-      for {tax, i} <- Enum.with_index(Map.get(attrs, :tax_breakdown) || []),
+      for {tax, i} <- indexed(attrs, :tax_breakdown),
+          is_map(tax),
           k <- @tax_amounts,
           v = tax[k],
           do: {[:tax_breakdown, i, k], v}
@@ -569,17 +605,29 @@ defmodule Facturx.Invoice do
     totals ++ lines ++ charges ++ taxes
   end
 
+  defp line_paths(line, _i) when not is_map(line), do: []
+
   defp line_paths(line, i) do
     own = for k <- @line_amounts, v = line[k], do: {[:lines, i, k], v}
 
     nested =
       for group <- [:allowances, :charges],
-          {ac, j} <- Enum.with_index(line[group] || []),
+          {ac, j} <- indexed(line, group),
+          is_map(ac),
           k <- @charge_amounts,
           v = ac[k],
           do: {[:lines, i, group, j, k], v}
 
     own ++ nested
+  end
+
+  # A caller's collection, indexed — and empty when it is not a list at all.
+  # `collections/1` is what reports that; this walk only has to survive it.
+  defp indexed(map, key) do
+    case Map.get(map, key) do
+      list when is_list(list) -> Enum.with_index(list)
+      _ -> []
+    end
   end
 
   defp get_in_map(attrs, [a, b]) do
