@@ -11,13 +11,12 @@ defmodule Facturx.XSD do
   (~5 ms) inside a short-lived task, so the schema's ETS table is reclaimed on
   exit.
 
-  Two profile schemas ship: `:en16931` (`priv/xsd/en16931/`) and `:extended`
-  (`priv/xsd/extended/`), the latter being what accepts the line-level French
-  extensions `EXT-FR-FE-*`. Other profiles return
+  All five profile schemas ship, under `priv/xsd/{minimum,basicwl,basic,en16931,
+  extended}/` — 80 KB in total. `:extended` is the one that accepts the
+  line-level French extensions `EXT-FR-FE-*`. An unknown profile returns
   `{:error, {:xsd_not_bundled, profile}}`.
 
-  The matching schematrons ship for both, so an EXTENDED document can be checked
-  against its business rules too — see `Facturx.Validate`.
+  The matching schematrons ship for all five too — see `Facturx.Validate`.
 
   ## Security
 
@@ -35,6 +34,9 @@ defmodule Facturx.XSD do
 
   # profile => bundled root schema (relative to priv/xsd/)
   @schemas %{
+    minimum: "minimum/Factur-X_MINIMUM.xsd",
+    basic_wl: "basicwl/Factur-X_BASICWL.xsd",
+    basic: "basic/Factur-X_BASIC.xsd",
     en16931: "en16931/Factur-X_EN16931.xsd",
     extended: "extended/Factur-X_EXTENDED.xsd"
   }

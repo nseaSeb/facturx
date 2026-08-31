@@ -355,4 +355,309 @@ defmodule Facturx.Invoice do
             # code}} rather than dropping it silently.
             tax_due_date_type_code: nil,
             totals: %{}
+
+  # --- construction ----------------------------------------------------------
+
+  @typedoc """
+  What `new/1` rejected, as `{path, reason}`.
+
+  The path locates the value — `[:number]`, `[:lines, 2, :net_price]` — so an
+  error names the field rather than the document.
+  """
+  @type error :: {[atom() | non_neg_integer()], atom()}
+
+  @doc """
+  Build an invoice from a plain map, validating and coercing as it goes.
+
+  Optional: `Facturx.CII.build/2` takes a bare struct or map exactly as before,
+  and nothing here is required to use the library. What `new/1` adds is a place
+  to fail early, on the caller's data rather than on a schematron report.
+
+  Returns **every** problem it found, not the first:
+
+      iex> Facturx.Invoice.new(%{currency: "EURO", lines: [%{net_price: 1.5}]})
+      {:error,
+       [
+         {[:buyer], :required},
+         {[:currency], :not_a_currency_code},
+         {[:issue_date], :required},
+         {[:lines, 0, :net_price], :float},
+         {[:lines, 0, :vat_category], :required},
+         {[:lines, 0, :vat_rate], :required},
+         {[:number], :required},
+         {[:seller], :required},
+         {[:type_code], :required}
+       ]}
+
+  ## Amounts
+
+  Integers and strings are coerced to `Decimal`; a `Decimal` passes through.
+
+  **Floats are refused.** `Decimal.from_float/1` is faithful — `19.99` stays
+  `19.99` — so the refusal is not about that conversion. It is that a float
+  reaching this function has usually been through float arithmetic already, and
+  `0.1 + 0.2` is `0.30000000000000004` before anything here can see it. Accepting
+  it would record the drift faithfully and call it validated. Pass a string, or a
+  `Decimal`. See `docs/adr/0001-perimetre-et-architecture.md`.
+
+  Non-finite decimals are refused for the same reason: `Decimal.parse/1` accepts
+  `"NaN"` and `"Infinity"`, and neither is a monetary amount.
+
+  ## What is required
+
+  `:number` (BT-1), `:issue_date` (BT-2), `:type_code` (BT-3), `:currency`
+  (BT-5), and a `:seller` and `:buyer` each carrying a `:name`. Everything else
+  is optional here — including the totals, which `totals/2` derives.
+  """
+  @spec new(map()) :: {:ok, t()} | {:error, [error()]}
+  def new(attrs) when is_map(attrs) do
+    attrs = Map.delete(attrs, :__struct__)
+
+    case coerce_amounts(attrs) ++ required(attrs) ++ shapes(attrs) do
+      [] -> {:ok, struct(__MODULE__, coerced(attrs))}
+      errors -> {:error, Enum.sort(errors)}
+    end
+  end
+
+  @doc """
+  Derive the line amounts, the VAT breakdown and the document totals.
+
+  Implements `BR-CO-10` through `BR-CO-17` and the per-category basis rules
+  (`BR-S-08` and its siblings): each line's net amount (BT-131), one breakdown
+  entry per VAT category and rate with its taxable and tax amounts (BT-116,
+  BT-117), then BT-106 to BT-115.
+
+  Values the caller already supplied are **kept**, not replaced. Where a supplied
+  value disagrees with the derived one, that is reported rather than silently
+  resolved:
+
+      {:error, {:totals_mismatch, [{[:totals, :grand_total], given, computed}]}}
+
+  Pass `overwrite: true` to take the computed figures regardless. A disagreement
+  is information — it usually means the caller and this module read the invoice
+  differently — so discarding it is a decision, not a default.
+
+  Two things are never derived, because nothing in the invoice determines them:
+  `:prepaid` (BT-113) and `:rounding` (BT-114). Both are read if present and
+  treated as zero if not. `:tax_total_in_tax_currency` (BT-111) is not derived
+  either — it needs an exchange rate this library does not have.
+
+  Exemption reasons are preserved: a breakdown entry the caller supplied is
+  completed, never replaced, since BT-120 and BT-121 cannot be derived from
+  amounts and category `E` is rejected without them (`BR-E-10`).
+  """
+  @spec totals(t(), keyword()) :: {:ok, t()} | {:error, term()}
+  defdelegate totals(invoice, opts \\ []), to: Facturx.Totals, as: :compute
+
+  # --- validation ------------------------------------------------------------
+
+  @required [:number, :issue_date, :type_code, :currency]
+
+  defp required(attrs) do
+    for field <- @required, blank?(Map.get(attrs, field)), do: {[field], :required}
+  end
+
+  defp shapes(attrs) do
+    party(attrs, :seller) ++
+      party(attrs, :buyer) ++
+      currency(attrs) ++
+      date(attrs, :issue_date) ++
+      date(attrs, :due_date) ++
+      collections(attrs) ++
+      line_vat(attrs)
+  end
+
+  # `new/1` promises every problem back as data, so a `:lines` that is a string,
+  # or a list holding one, must be an error rather than a `Protocol.UndefinedError`
+  # raised out of the coercion walk.
+  @collections [:lines, :allowances, :charges, :tax_breakdown, :notes, :payment_means]
+
+  defp collections(attrs) do
+    Enum.flat_map(@collections, &collection(attrs, &1)) ++ totals_shape(attrs)
+  end
+
+  defp collection(attrs, key) do
+    case Map.get(attrs, key) do
+      nil -> []
+      list when is_list(list) -> non_maps(list, key)
+      _ -> [{[key], :not_a_list}]
+    end
+  end
+
+  defp non_maps(list, key) do
+    for {entry, i} <- Enum.with_index(list), not is_map(entry), do: {[key, i], :not_a_map}
+  end
+
+  defp totals_shape(attrs) do
+    case Map.get(attrs, :totals) do
+      nil -> []
+      m when is_map(m) -> []
+      _ -> [{[:totals], :not_a_map}]
+    end
+  end
+
+  # BT-151 and BT-152 are required on every line (BR-CO-4), and without them a
+  # line cannot be placed in any VAT breakdown group — it would count towards the
+  # total without contributing any VAT, which is a wrong invoice rather than an
+  # incomplete one.
+  defp line_vat(attrs) do
+    for {line, i} <- indexed(attrs, :lines),
+        is_map(line),
+        {field, key} <- [{:vat_category, :vat_category}, {:vat_rate, :vat_rate}],
+        blank?(line[key]),
+        do: {[:lines, i, field], :required}
+  end
+
+  defp party(attrs, key) do
+    case Map.get(attrs, key) do
+      nil -> [{[key], :required}]
+      p when is_map(p) -> if blank?(p[:name]), do: [{[key, :name], :required}], else: []
+      _ -> [{[key], :not_a_party}]
+    end
+  end
+
+  # BT-5 is an ISO 4217 alphabetic code: three letters, upper case. The list
+  # itself is not copied here — the schematron already carries it, and a second
+  # copy in Elixir would only be something to drift — but "123" and "---" are not
+  # currencies in any list, and catching them here is the point of `new/1`.
+  defp currency(attrs) do
+    case Map.get(attrs, :currency) do
+      nil ->
+        []
+
+      code when is_binary(code) ->
+        if code =~ ~r/^[A-Z]{3}$/, do: [], else: [{[:currency], :not_a_currency_code}]
+
+      _ ->
+        [{[:currency], :not_a_currency_code}]
+    end
+  end
+
+  defp date(attrs, key) do
+    case Map.get(attrs, key) do
+      nil -> []
+      %Date{} -> []
+      _ -> [{[key], :not_a_date}]
+    end
+  end
+
+  defp blank?(value), do: value in [nil, ""]
+
+  # --- amount coercion -------------------------------------------------------
+
+  # Every path at which the struct expects a Decimal.
+  @totals_amounts ~w(line_total charge_total allowance_total tax_basis_total tax_total
+                     tax_total_in_tax_currency rounding grand_total prepaid due_payable)a
+  @line_amounts ~w(net_price gross_price price_discount quantity line_total vat_rate)a
+  @charge_amounts ~w(amount basis_amount percent vat_rate)a
+  @tax_amounts ~w(rate basis calculated)a
+
+  # Both walks enumerate the same `paths/1`, which is what stops them disagreeing
+  # about which fields are amounts.
+  defp coerce_amounts(attrs) do
+    Enum.flat_map(amount_paths(attrs), fn {path, value} ->
+      case to_decimal(value) do
+        {:ok, _} -> []
+        {:error, reason} -> [{path, reason}]
+      end
+    end)
+  end
+
+  defp coerced(attrs) do
+    Enum.reduce(amount_paths(attrs), attrs, fn {path, value}, acc ->
+      case to_decimal(value) do
+        {:ok, d} -> put_in_path(acc, path, d)
+        {:error, _} -> acc
+      end
+    end)
+  end
+
+  @doc false
+  # Every path at which an amount is expected, as `{path, value}`. Public to the
+  # library because three places need the same list — `new/1` to coerce,
+  # `Facturx.Totals` to refuse what it cannot add, and `Facturx.CII.build/2` to
+  # refuse what it cannot emit. Three copies would drift, and the field they all
+  # forgot would be the one carrying the NaN.
+  @spec amount_paths(map()) :: [{[atom() | non_neg_integer()], term()}]
+  def amount_paths(attrs) do
+    totals = for k <- @totals_amounts, v = get_in_map(attrs, [:totals, k]), do: {[:totals, k], v}
+
+    lines =
+      for {line, i} <- indexed(attrs, :lines),
+          entry <- line_paths(line, i),
+          do: entry
+
+    charges =
+      for group <- [:allowances, :charges],
+          {ac, i} <- indexed(attrs, group),
+          is_map(ac),
+          k <- @charge_amounts,
+          v = ac[k],
+          do: {[group, i, k], v}
+
+    taxes =
+      for {tax, i} <- indexed(attrs, :tax_breakdown),
+          is_map(tax),
+          k <- @tax_amounts,
+          v = tax[k],
+          do: {[:tax_breakdown, i, k], v}
+
+    totals ++ lines ++ charges ++ taxes
+  end
+
+  defp line_paths(line, _i) when not is_map(line), do: []
+
+  defp line_paths(line, i) do
+    own = for k <- @line_amounts, v = line[k], do: {[:lines, i, k], v}
+
+    nested =
+      for group <- [:allowances, :charges],
+          {ac, j} <- indexed(line, group),
+          is_map(ac),
+          k <- @charge_amounts,
+          v = ac[k],
+          do: {[:lines, i, group, j, k], v}
+
+    own ++ nested
+  end
+
+  # A caller's collection, indexed — and empty when it is not a list at all.
+  # `collections/1` is what reports that; this walk only has to survive it.
+  defp indexed(map, key) do
+    case Map.get(map, key) do
+      list when is_list(list) -> Enum.with_index(list)
+      _ -> []
+    end
+  end
+
+  defp get_in_map(attrs, [a, b]) do
+    case Map.get(attrs, a) do
+      m when is_map(m) -> Map.get(m, b)
+      _ -> nil
+    end
+  end
+
+  defp put_in_path(map, [key], value), do: Map.put(map, key, value)
+
+  defp put_in_path(map, [key | rest], value) when is_integer(key) do
+    List.update_at(map, key, &put_in_path(&1, rest, value))
+  end
+
+  defp put_in_path(map, [key | rest], value) do
+    Map.put(map, key, put_in_path(Map.get(map, key), rest, value))
+  end
+
+  defp to_decimal(%Decimal{coef: coef} = d) when is_integer(coef), do: {:ok, d}
+  defp to_decimal(%Decimal{}), do: {:error, :not_a_finite_amount}
+  defp to_decimal(n) when is_integer(n), do: {:ok, Decimal.new(n)}
+  defp to_decimal(f) when is_float(f), do: {:error, :float}
+
+  defp to_decimal(s) when is_binary(s) do
+    case Decimal.parse(s) do
+      {%Decimal{coef: coef} = d, ""} when is_integer(coef) -> {:ok, d}
+      _ -> {:error, :not_a_number}
+    end
+  end
+
+  defp to_decimal(_other), do: {:error, :not_a_number}
 end

@@ -1,7 +1,7 @@
 defmodule Facturx.MixProject do
   use Mix.Project
 
-  @version "0.6.0"
+  @version "0.7.0"
   @source_url "https://github.com/nseaSeb/facturx"
 
   def project do
@@ -15,6 +15,8 @@ defmodule Facturx.MixProject do
       description: description(),
       package: package(),
       docs: docs(),
+      dialyzer: dialyzer(),
+      test_coverage: [tool: ExCoveralls],
       name: "Facturx",
       source_url: @source_url
     ]
@@ -24,6 +26,10 @@ defmodule Facturx.MixProject do
   # Embed / Extract paths run in CI without the private fixtures. package/0 does
   # not ship test/, so nothing of it reaches Hex.
   defp elixirc_paths(:test), do: ["lib", "test/support"]
+  # dev/ holds `mix facturx.harness`, the veraPDF + Python-parity oracle. It is
+  # compiled here and nowhere else, so package/0 shipping all of lib/ cannot
+  # carry a task that needs fixtures nobody else has.
+  defp elixirc_paths(:dev), do: ["lib", "dev"]
   defp elixirc_paths(_), do: ["lib"]
 
   def application do
@@ -35,20 +41,56 @@ defmodule Facturx.MixProject do
     ]
   end
 
+  # The coveralls tasks only exist in :test, so they have to select it themselves.
+  def cli do
+    [
+      preferred_envs: [
+        coveralls: :test,
+        "coveralls.html": :test,
+        "coveralls.github": :test
+      ]
+    ]
+  end
+
   defp deps do
     [
       # Pure-Elixir XML parsing/building for the CII core.
       {:saxy, "~> 1.6"},
 
       # Exact decimal arithmetic for monetary amounts (prices, VAT, totals).
-      {:decimal, "~> 2.0"},
+      # 3.0 is the floor, not a preference: every 2.x is affected by
+      # CVE-2026-32686, and `parse/1` hands amounts straight from an untrusted
+      # invoice to the caller. See the note in Facturx.CII.
+      {:decimal, "~> 3.0"},
 
       # Optional: only needed by Facturx.Validate (Schematron over HTTP).
       # Callers that don't validate don't pull an HTTP client.
       {:req, "~> 0.5", optional: true},
 
       # Dev / docs only.
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+
+      # Quality gates. The public API is almost fully @spec'd; until dialyxir
+      # arrived nothing checked those specs against the code.
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:stream_data, "~> 1.1", only: [:dev, :test]},
+      {:excoveralls, "~> 0.18", only: :test}
+    ]
+  end
+
+  defp dialyzer do
+    [
+      # Facturx.XSD calls :xmerl_xsd and :xmerl_xpath directly, and OTP apps are
+      # not in the PLT unless named here.
+      plt_add_apps: [:xmerl],
+      # Never priv/: package/0 ships priv/ to Hex, and a PLT is machine-local.
+      plt_local_path: "_build/plts",
+      plt_core_path: "_build/plts",
+      # No :underspecs. The public specs are deliberately wider than the success
+      # typing — `{:error, term()}` is what lets a new error atom ship without
+      # breaking the contract — so every one of them would be reported.
+      flags: [:error_handling, :extra_return, :missing_return]
     ]
   end
 
@@ -68,6 +110,9 @@ defmodule Facturx.MixProject do
   defp docs do
     [
       main: "readme",
+      # Without this, the "source" links on hexdocs follow the default branch
+      # rather than the tag the published docs were built from.
+      source_ref: "v#{@version}",
       extras: [
         "README.md",
         "CHANGELOG.md",

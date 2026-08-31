@@ -67,6 +67,19 @@ defmodule Facturx.CII do
   `:tax_due_date_type_code` with an empty `:tax_breakdown` has nowhere to go and
   returns `{:error, {:vat_point_date_unemittable, code}}` rather than being
   dropped silently.
+
+  ## What a leaner profile drops
+
+  That error is about a struct that contradicts itself — BT-8 with no breakdown
+  to attach it to. Asking for a leaner profile is a different thing: it is an
+  explicit instruction to emit less, and `build/2` obeys it silently, because
+  dropping data is the whole point.
+
+  `:minimum` is the extreme case. Its schema has no `ram:ApplicableTradeTax`, so
+  the VAT breakdown goes, and BT-8 with it; the lines, the notes, the payment
+  means, the contacts and the buyer's address go too. What comes back from
+  `parse/1` is therefore much less than what went in — see `Facturx.profiles/0`
+  and the profile table in the README for what each one carries.
   """
   @spec build(Invoice.t(), keyword()) :: {:ok, binary()} | {:error, term()}
   def build(invoice, opts \\ [])
@@ -75,7 +88,8 @@ defmodule Facturx.CII do
     profile = Keyword.get(opts, :profile, inv.profile || :en16931)
     check_bp? = validate_bp?(opts)
 
-    with :ok <- check_business_process(inv.business_process, check_bp?),
+    with :ok <- check_finite_amounts(inv),
+         :ok <- check_business_process(inv.business_process, check_bp?),
          :ok <- check_final_invoice_type(inv, check_bp?),
          :ok <- check_vat_point_dates(inv, flag?(opts, :validate_vat_point_date, true)),
          :ok <- check_tax_currency(inv) do
@@ -83,7 +97,7 @@ defmodule Facturx.CII do
         {"rsm:CrossIndustryInvoice", @ns,
          [
            context(inv, profile),
-           document(inv),
+           document(inv, profile),
            transaction(inv, profile)
          ]}
 
@@ -92,6 +106,26 @@ defmodule Facturx.CII do
   rescue
     e -> {:error, e}
   end
+
+  # `Decimal.parse/1` accepts "NaN" and "Infinity", and `parse/1` refuses them —
+  # but a struct can be built by hand, or arrive from arithmetic done elsewhere.
+  # Emitting one would produce `<ram:GrandTotalAmount>NaN</ram:GrandTotalAmount>`,
+  # which is not an amount and not a document. The path list is shared with
+  # `Facturx.Invoice.new/1` and `Facturx.Totals`, so a field none of them knows
+  # about is not a field one of them silently skips.
+  defp check_finite_amounts(inv) do
+    inv
+    |> Map.from_struct()
+    |> Invoice.amount_paths()
+    |> Enum.find(fn {_path, value} -> not finite?(value) end)
+    |> case do
+      nil -> :ok
+      {path, value} -> {:error, {:not_a_finite_amount, path, value}}
+    end
+  end
+
+  defp finite?(%Decimal{coef: coef}), do: is_integer(coef)
+  defp finite?(_other), do: true
 
   defp validate_bp?(opts), do: flag?(opts, :validate_business_process, false)
 
@@ -216,12 +250,13 @@ defmodule Facturx.CII do
     ])
   end
 
-  defp document(inv) do
+  defp document(inv, profile) do
     e("rsm:ExchangedDocument", [
       t("ram:ID", inv.number),
       t("ram:TypeCode", inv.type_code),
       date_el("ram:IssueDateTime", inv.issue_date),
-      Enum.map(inv.notes, &note/1)
+      # ExchangedDocumentType has no IncludedNote in MINIMUM.
+      if(at_least?(profile, :basic_wl), do: Enum.map(inv.notes, &note/1))
     ])
   end
 
@@ -239,9 +274,13 @@ defmodule Facturx.CII do
   # EXT-FR-FE-183, a French extension on the target trajectory, and emitting one
   # gets an EN 16931 document rejected. Both only open up in EXTENDED, so the
   # profile decides rather than the caller.
-  defp line_notes(line, :extended), do: Enum.map(with_content(line), &note/1)
+  defp line_notes(line, profile) do
+    if at_least?(profile, :extended),
+      do: Enum.map(with_content(line), &note/1),
+      else: first_line_note(line)
+  end
 
-  defp line_notes(line, _profile) do
+  defp first_line_note(line) do
     # The first note *with content*, not simply the first: a leading entry
     # carrying only a subject code would otherwise take the single slot the
     # profile allows and emit nothing at all.
@@ -260,13 +299,19 @@ defmodule Facturx.CII do
   # soon as a caller passes `profile:`, and the guideline URN would then say one
   # thing while the line notes obeyed another.
   defp transaction(inv, profile) do
+    # MINIMUM and BASIC WL have no IncludedSupplyChainTradeLineItem at all —
+    # "WL" is *without lines*. Everything the lines carried is simply not
+    # emitted; the header totals still are.
+    lines =
+      if at_least?(profile, :basic), do: Enum.map(inv.lines, &line_item(&1, profile)), else: []
+
     e(
       "rsm:SupplyChainTradeTransaction",
-      Enum.map(inv.lines, &line_item(&1, profile)) ++
+      lines ++
         [
-          header_agreement(inv),
-          header_delivery(inv),
-          header_settlement(inv)
+          header_agreement(inv, profile),
+          header_delivery(inv, profile),
+          header_settlement(inv, profile)
         ]
     )
   end
@@ -309,23 +354,26 @@ defmodule Facturx.CII do
 
   # EXT-FR-FE-BG-06 / -136 / -138. A French extension on the target trajectory,
   # so EN 16931 rejects it: the profile decides, as for the line notes.
-  defp line_preceding_invoice(line, :extended) do
-    case line[:preceding_invoice] do
-      nil -> nil
-      ref -> preceding_invoice(ref)
+  defp line_preceding_invoice(line, profile) do
+    if at_least?(profile, :extended) do
+      case line[:preceding_invoice] do
+        nil -> nil
+        ref -> preceding_invoice(ref)
+      end
     end
   end
-
-  defp line_preceding_invoice(_line, _profile), do: nil
 
   # EXT-FR-FE-BG-10 (`-149` to `-157`) and EXT-FR-FE-BG-11 (`-158*`). Same
   # French extensions, same profile gate; both reuse the header-level emitters,
   # the CII types being identical.
-  defp line_ship_to(line, :extended), do: party("ram:ShipToTradeParty", line[:ship_to])
-  defp line_ship_to(_line, _profile), do: nil
+  defp line_ship_to(line, profile) do
+    if at_least?(profile, :extended),
+      do: party("ram:ShipToTradeParty", line[:ship_to], profile)
+  end
 
-  defp line_delivery_event(line, :extended), do: delivery_event(line[:delivery_date])
-  defp line_delivery_event(_line, _profile), do: nil
+  defp line_delivery_event(line, profile) do
+    if at_least?(profile, :extended), do: delivery_event(line[:delivery_date])
+  end
 
   defp line_trade_tax(line) do
     e("ram:ApplicableTradeTax", [
@@ -361,23 +409,49 @@ defmodule Facturx.CII do
     ])
   end
 
-  defp header_agreement(inv) do
+  defp header_agreement(inv, profile) do
     e("ram:ApplicableHeaderTradeAgreement", [
-      party("ram:SellerTradeParty", inv.seller),
-      party("ram:BuyerTradeParty", inv.buyer),
-      # BG-11 — follows the buyer in HeaderTradeAgreementType.
-      party("ram:SellerTaxRepresentativeTradeParty", inv.tax_representative)
+      party("ram:SellerTradeParty", inv.seller, profile),
+      party("ram:BuyerTradeParty", inv.buyer, profile),
+      # BG-11 — follows the buyer in HeaderTradeAgreementType, and starts at
+      # BASIC WL: MINIMUM has no SellerTaxRepresentativeTradeParty.
+      if(at_least?(profile, :basic_wl),
+        do: party("ram:SellerTaxRepresentativeTradeParty", inv.tax_representative, profile)
+      )
     ])
   end
 
-  defp header_delivery(inv) do
-    e("ram:ApplicableHeaderTradeDelivery", [
-      party("ram:ShipToTradeParty", inv.ship_to),
-      delivery_event(inv.delivery_date)
+  # HeaderTradeDeliveryType is an *empty* complexType in MINIMUM: the element is
+  # still required, with nothing inside it.
+  defp header_delivery(inv, profile) do
+    children =
+      if at_least?(profile, :basic_wl) do
+        [party("ram:ShipToTradeParty", inv.ship_to, profile), delivery_event(inv.delivery_date)]
+      else
+        []
+      end
+
+    e("ram:ApplicableHeaderTradeDelivery", children)
+  end
+
+  # MINIMUM's HeaderTradeSettlementType holds two children and no more:
+  # InvoiceCurrencyCode and the summation. Not even ApplicableTradeTax — which
+  # is why a MINIMUM document cannot carry BG-23, and why it is an accounting
+  # aid rather than an invoice under the French mandate.
+  defp header_settlement(inv, profile) do
+    if at_least?(profile, :basic_wl),
+      do: full_settlement(inv, profile),
+      else: minimum_settlement(inv, profile)
+  end
+
+  defp minimum_settlement(inv, profile) do
+    e("ram:ApplicableHeaderTradeSettlement", [
+      t("ram:InvoiceCurrencyCode", inv.currency),
+      monetary_summation(inv.totals, inv.currency, inv.tax_currency, profile)
     ])
   end
 
-  defp header_settlement(inv) do
+  defp full_settlement(inv, profile) do
     e(
       "ram:ApplicableHeaderTradeSettlement",
       # InvoiceReferencedDocument comes *after* the summation in
@@ -389,7 +463,7 @@ defmodule Facturx.CII do
         t("ram:TaxCurrencyCode", inv.tax_currency),
         t("ram:InvoiceCurrencyCode", inv.currency)
       ] ++
-        Enum.map(inv.payment_means, &payment_means/1) ++
+        Enum.map(inv.payment_means, &payment_means(&1, profile)) ++
         Enum.map(inv.tax_breakdown, &trade_tax(&1, inv.tax_due_date_type_code)) ++
         [
           # BillingSpecifiedPeriod sits between ApplicableTradeTax and
@@ -399,7 +473,7 @@ defmodule Facturx.CII do
         allowances_and_charges(Map.from_struct(inv)) ++
         [
           payment_terms(inv.due_date),
-          monetary_summation(inv.totals, inv.currency, inv.tax_currency)
+          monetary_summation(inv.totals, inv.currency, inv.tax_currency, profile)
         ] ++
         Enum.map(inv.preceding_invoices, &preceding_invoice/1)
     )
@@ -453,25 +527,36 @@ defmodule Facturx.CII do
   # BG-16 (BT-81 / BT-82) with its account and institution sub-blocks. Order follows
   # TradeSettlementPaymentMeansType: code, information, card, debited account,
   # credited account, institution.
-  defp payment_means(pm) do
+  # Three of the six children start at EN 16931: BT-82 (Information), BG-18 (the
+  # card) and BT-86 (the BIC). BASIC and BASIC WL carry the account, not the
+  # institution.
+  defp payment_means(pm, profile) do
+    en? = at_least?(profile, :en16931)
+
     e("ram:SpecifiedTradeSettlementPaymentMeans", [
       t("ram:TypeCode", pm[:type_code]),
-      t("ram:Information", pm[:information]),
+      if(en?, do: t("ram:Information", pm[:information])),
       # BG-18 — ID is required by the schema, so the card block needs it.
-      maybe("ram:ApplicableTradeSettlementFinancialCard", [
-        t("ram:ID", pm[:card_id]),
-        t("ram:CardholderName", pm[:cardholder_name])
-      ]),
+      if(en?,
+        do:
+          maybe("ram:ApplicableTradeSettlementFinancialCard", [
+            t("ram:ID", pm[:card_id]),
+            t("ram:CardholderName", pm[:cardholder_name])
+          ])
+      ),
       # BG-19 (BT-91) — DebtorFinancialAccountType requires IBANID.
       wrap("ram:PayerPartyDebtorFinancialAccount", t("ram:IBANID", pm[:payer_iban])),
-      # BG-17 (BT-84 / BT-85) — every child optional, hence maybe/2.
+      # BG-17 (BT-84 / BT-85) — every child optional, hence maybe/2. BT-85
+      # (AccountName) is the one that waits for EN 16931.
       maybe("ram:PayeePartyCreditorFinancialAccount", [
         t("ram:IBANID", pm[:iban]),
-        t("ram:AccountName", pm[:account_name]),
+        if(en?, do: t("ram:AccountName", pm[:account_name])),
         t("ram:ProprietaryID", pm[:account_id])
       ]),
       # BT-86 — CreditorFinancialInstitutionType requires BICID.
-      wrap("ram:PayeeSpecifiedCreditorFinancialInstitution", t("ram:BICID", pm[:bic]))
+      if(en?,
+        do: wrap("ram:PayeeSpecifiedCreditorFinancialInstitution", t("ram:BICID", pm[:bic]))
+      )
     ])
   end
 
@@ -501,37 +586,63 @@ defmodule Facturx.CII do
 
   # Wire order does not follow the BT numbering: ChargeTotalAmount comes *before*
   # AllowanceTotalAmount, though BT-107 (allowances) precedes BT-108 (charges).
-  defp monetary_summation(totals, currency, tax_currency) do
+  # MINIMUM keeps four of the ten: the basis, the tax, the grand total and what
+  # is due. BT-114 (rounding) only appears at EN 16931.
+  defp monetary_summation(totals, currency, tax_currency, profile) do
+    wl? = at_least?(profile, :basic_wl)
+
     e("ram:SpecifiedTradeSettlementHeaderMonetarySummation", [
-      amount("ram:LineTotalAmount", totals[:line_total]),
-      amount("ram:ChargeTotalAmount", totals[:charge_total]),
-      amount("ram:AllowanceTotalAmount", totals[:allowance_total]),
+      if(wl?, do: amount("ram:LineTotalAmount", totals[:line_total])),
+      if(wl?, do: amount("ram:ChargeTotalAmount", totals[:charge_total])),
+      if(wl?, do: amount("ram:AllowanceTotalAmount", totals[:allowance_total])),
       amount("ram:TaxBasisTotalAmount", totals[:tax_basis_total]),
       amount("ram:TaxTotalAmount", totals[:tax_total], currency),
-      # BT-111 is the second TaxTotalAmount (maxOccurs=2), in the accounting currency.
-      amount("ram:TaxTotalAmount", totals[:tax_total_in_tax_currency], tax_currency),
-      amount("ram:RoundingAmount", totals[:rounding]),
+      # BT-111 is the second TaxTotalAmount (maxOccurs=2), in the accounting
+      # currency — and it goes wherever BT-6 goes. MINIMUM has no
+      # TaxCurrencyCode, so emitting BT-111 there would state an amount in a
+      # currency the document never declares. The schema allows two occurrences
+      # in every profile and would not have caught it; the build/parse fixed
+      # point did, the second pass having no BT-6 left to read back.
+      if(wl?, do: amount("ram:TaxTotalAmount", totals[:tax_total_in_tax_currency], tax_currency)),
+      if(at_least?(profile, :en16931), do: amount("ram:RoundingAmount", totals[:rounding])),
       amount("ram:GrandTotalAmount", totals[:grand_total]),
-      amount("ram:TotalPrepaidAmount", totals[:prepaid]),
+      if(wl?, do: amount("ram:TotalPrepaidAmount", totals[:prepaid])),
       amount("ram:DuePayableAmount", totals[:due_payable])
     ])
   end
 
-  defp party(_tag, nil), do: nil
+  defp party(_tag, nil, _profile), do: nil
 
-  defp party(tag, p) do
+  defp party(tag, p, profile) do
     e(tag, [
       # GlobalID precedes Name in TradePartyType. The 0231 default (SIREN of an
       # assujetti unique) is BT-29d, which the annexe puts on the seller alone —
       # applying it everywhere would mislabel, say, a buyer's GLN as a French VAT
-      # group id.
-      id_el_named("ram:GlobalID", p[:global_id], p[:global_scheme] || default_global_scheme(tag)),
+      # group id. MINIMUM's TradePartyType has no GlobalID.
+      if(at_least?(profile, :basic_wl),
+        do:
+          id_el_named(
+            "ram:GlobalID",
+            p[:global_id],
+            p[:global_scheme] || default_global_scheme(tag)
+          )
+      ),
       t("ram:Name", p[:name]),
       legal_org(p),
-      contact(p[:contact]),
-      address(p[:address]),
-      tax_registration(p[:vat])
+      # BG-6 / BG-9 — TradeContactType exists only from EN 16931 up.
+      if(at_least?(profile, :en16931), do: contact(p[:contact])),
+      if(addressable?(tag, profile), do: address(p[:address], profile)),
+      if(addressable?(tag, profile), do: tax_registration(p[:vat]))
     ])
+  end
+
+  # In MINIMUM the address (BG-5) and the tax registration belong to the seller
+  # and to no one else: the seller's address is required there (BR-08, BR-09),
+  # the buyer's is refused. The XSD cannot say this — it types every party alike
+  # and accepts both — so only the schematron does, which is why a realistic
+  # invoice has to be put in front of it before a profile is called done.
+  defp addressable?(tag, profile) do
+    at_least?(profile, :basic_wl) or tag == "ram:SellerTradeParty"
   end
 
   defp legal_org(p) do
@@ -551,18 +662,21 @@ defmodule Facturx.CII do
     ])
   end
 
-  defp address(nil), do: nil
+  defp address(nil, _profile), do: nil
 
-  defp address(a) do
+  # MINIMUM's TradeAddressType is the country and nothing else.
+  defp address(a, profile) do
+    wl? = at_least?(profile, :basic_wl)
+
     e("ram:PostalTradeAddress", [
-      t("ram:PostcodeCode", a[:postcode]),
-      t("ram:LineOne", a[:line_one]),
-      t("ram:LineTwo", a[:line_two]),
-      t("ram:LineThree", a[:line_three]),
-      t("ram:CityName", a[:city]),
+      if(wl?, do: t("ram:PostcodeCode", a[:postcode])),
+      if(wl?, do: t("ram:LineOne", a[:line_one])),
+      if(wl?, do: t("ram:LineTwo", a[:line_two])),
+      if(wl?, do: t("ram:LineThree", a[:line_three])),
+      if(wl?, do: t("ram:CityName", a[:city])),
       t("ram:CountryID", a[:country]),
       # CountrySubDivisionName follows CountryID, not the city.
-      t("ram:CountrySubDivisionName", a[:country_subdivision])
+      if(wl?, do: t("ram:CountrySubDivisionName", a[:country_subdivision]))
     ])
   end
 
@@ -1045,9 +1159,15 @@ defmodule Facturx.CII do
   # Total: never raises on malformed content (parse/1 must honour {:ok|:error}).
   defp num(nil), do: nil
 
+  # `is_integer(coef)` is the finiteness test: `Decimal.parse/1` accepts "NaN",
+  # "Infinity" and "-Infinity", representing them as a `:NaN` or `:inf`
+  # coefficient. A monetary amount is neither, and a document arriving from
+  # elsewhere should not be able to put one into an `Invoice` — it would
+  # propagate through the caller's arithmetic and come back out of `build/2` as
+  # `<ram:GrandTotalAmount>NaN</ram:GrandTotalAmount>`.
   defp num(str) do
     case Decimal.parse(str) do
-      {d, ""} -> d
+      {%Decimal{coef: coef} = d, ""} when is_integer(coef) -> d
       _ -> nil
     end
   end
@@ -1068,6 +1188,7 @@ defmodule Facturx.CII do
   defp prune(map), do: map |> Enum.reject(fn {_k, v} -> is_nil(v) end) |> Map.new()
 
   # profile <-> guideline URN (shared source of truth)
+  defp at_least?(profile, floor), do: Facturx.Profile.at_least?(profile, floor)
   defp profile_urn(profile), do: Facturx.Profile.to_urn(profile)
   defp profile_from_urn(urn), do: Facturx.Profile.from_urn(urn)
 end

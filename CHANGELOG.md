@@ -3,6 +3,180 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.7.0] - 2026-08-31
+
+### Security
+- **`:decimal` moves to `~> 3.0`, a breaking dependency change.** Every 2.x is
+  affected by CVE-2026-32686 (GHSA-rhv4-8758-jx7v): the exponent of a parsed
+  decimal was unbounded, so `Decimal.parse("1e10000000")` succeeded and the
+  first arithmetic on the result — comparing two totals, say — allocated a
+  ten-million-digit coefficient and could exhaust the BEAM's memory on a single
+  request. `Facturx.CII.parse/1` takes invoices from third parties and handed
+  such a value straight back, so this was reachable through the public API on
+  untrusted input. decimal 3 caps the exponent at 6144, the IEEE 754 decimal128
+  Emax. Found by `mix hex.audit`, on its first run in CI.
+
+  A wider requirement (`~> 2.0 or ~> 3.0`) was rejected: the resolver would keep
+  picking 2.x in existing projects, which is precisely the case that needs
+  fixing.
+
+- **A non-finite amount no longer reaches an `Invoice`.** `Decimal.parse/1`
+  accepts `"NaN"` and `"Infinity"`, and a hostile document could put either in a
+  monetary field — where it would propagate through the caller's arithmetic and
+  come back out of `build/2` as `<ram:GrandTotalAmount>NaN</ram:GrandTotalAmount>`.
+  `parse/1` now reads those as absent, like any other malformed amount.
+
+### Fixed
+- **A stream is no longer cut short by its own contents.** `/Length` is now
+  authoritative in both `Facturx.Embed` and `Facturx.Extract`; `endstream` and
+  `endobj` are no longer located by scanning from the front of the object.
+  Stream data does contain those bytes: deflate emits stored blocks that copy
+  their input verbatim, and an uncompressed XMP packet can simply mention the
+  word. Two failures followed, both silent until now — an embedded payload came
+  back as `{:error, :inflate_failed}`, and a base whose `/Metadata` contained the
+  keyword had its XMP truncated before promotion, so the output PDF lost the
+  Factur-X extension schema without any error being raised. Found by the new
+  property tests.
+
+- **`Facturx.Embed.embed/3` no longer raises.** It declared
+  `{:ok, binary()} | {:error, term()}` while `raise "unbalanced dictionary"` and
+  a `MatchError` (no `<<` after the trailer) could both reach the caller. A
+  malformed PDF is an input, not a programming error: the two sites now return
+  `{:error, :malformed_dictionary}` / `{:error, :dictionary_not_found}`, and both
+  `embed/3` and `Facturx.Extract.extract/1` carry a last-resort `rescue`. Pinned
+  by a property over arbitrary truncations and junk suffixes.
+- **Encrypted PDFs are refused instead of misread**, and only on the strength
+  of a trailer dictionary. Nothing looked for
+  `/Encrypt`, so an encrypted file failed to inflate or produced meaningless
+  bytes. Both paths now return `{:error, :encrypted_pdf_unsupported}` — and on
+  extraction that is reported in place of `:no_embedded_file`, since an
+  unreadable attachment is not an absent one.
+
+### Added
+- **PDF 1.5+ files are read and written.** Cross-reference streams
+  (`/Type /XRef`) and object streams (`/ObjStm`) were refused outright, which
+  ruled out most current producers. Both are supported now:
+
+    * `Facturx.Extract` builds its object index by scanning for `N G obj` and
+      then expanding every object stream. It never reads the cross-reference
+      table — a scan is what survives an incremental update, where the previous
+      revision's table still points at the objects the update replaced.
+    * `Facturx.Embed` writes the update back in the form the base uses, and never
+      a hybrid: a classic table appended to a stream-based document is what a
+      strict PDF/A reader is entitled to reject. A catalog compressed inside an
+      object stream is read from there and rewritten at top level.
+
+  Verified on a real file rather than a synthetic one. No tool on the development
+  machine writes cross-reference streams — Ghostscript's pdfwrite emits a classic
+  table, pypdf's writer likewise — so `dev/tools/xref_stream_base.py`
+  re-serialises the PDF/A base with an object stream and a cross-reference
+  stream, and `mix facturx.harness` has veraPDF vouch for that base before
+  concluding anything from what we write to it. The output is PDF/A-3b with zero
+  failed rules, and the Python `akretion/factur-x` reference navigates our
+  cross-reference stream and extracts the payload byte-identically — which is
+  what says it is correct rather than merely self-consistent.
+
+- **`Facturx.totals/2` derives the document arithmetic.** The line net amounts,
+  the VAT breakdown grouped by category and rate, and BT-106 to BT-115 —
+  `BR-CO-10` to `BR-CO-17` and the per-category basis rules. None of it is
+  checked by the XSD; until now the caller computed all of it by hand and found
+  out from a Schematron report, or from a rejected invoice.
+
+  A figure the caller supplied is kept, and a disagreement is **reported**
+  rather than resolved: `{:error, {:totals_mismatch, [{path, given, computed}]}}`.
+  Pass `overwrite: true` to take the computed figures. `:prepaid` (BT-113) and
+  `:rounding` (BT-114) are never derived — nothing in the invoice determines
+  them.
+
+- **`Facturx.new/1` builds an invoice from a plain map**, reporting every problem
+  at once rather than the first, and coercing integers and strings to `Decimal`.
+  **Floats are refused.** `Decimal.from_float/1` is faithful, so this is not
+  about that conversion: a float reaching the boundary has usually been through
+  float arithmetic already, and `0.1 + 0.2` is `0.30000000000000004` before
+  anything here can see it. Accepting it would record the drift and call it
+  validated.
+
+  `totals/2` refuses rather than guesses. An invoice with **no lines** returns
+  `{:error, :no_lines}`: everything it derives is founded on the line amounts, and
+  deriving zero would be a lie — a BASIC WL or MINIMUM invoice carries no lines
+  and still has a VAT liability. A breakdown entry matching no line returns
+  `{:error, {:orphan_tax_breakdown, …}}` rather than being dropped. An amount
+  that is not a `Decimal` returns `{:error, {:not_a_decimal, path, value}}`,
+  because this module both adds and sorts them and coercing quietly is the float
+  mistake again.
+
+  `new/1` also requires `:vat_category` and `:vat_rate` on every line (BR-CO-4).
+  Without them a line cannot be placed in any VAT breakdown group: it would count
+  towards the invoice total while contributing no VAT, which is a wrong invoice
+  rather than an incomplete one.
+
+  Both are optional — `build/2` and `generate/3` still take a bare struct or map.
+  `docs/adr/0001-perimetre-et-architecture.md` records why the original "no
+  struct-level validation" decision was revised.
+
+- `Facturx.CII.build/2` refuses a non-finite amount rather than emitting
+  `<ram:GrandTotalAmount>NaN</ram:GrandTotalAmount>`. The list of fields that
+  hold an amount is now shared by `new/1`, the totals and the builder, so the
+  field none of them knew about cannot be the one carrying the NaN.
+
+- **The MINIMUM, BASIC WL and BASIC profiles are real.** `Facturx.CII.build/2`
+  used to emit the same document whatever the profile and change only the
+  guideline URN, so those three produced non-conformant files carrying a
+  conformant claim — and, their schemas not being bundled, nothing in the library
+  could tell. `build/2` now restricts what it emits to what each profile allows,
+  and all five XSDs ship (80 KB in total), along with all five schematrons. Each
+  profile is checked against its own schema *and* its own rule set in CI.
+
+  On the schematrons: `priv/` is now 4.4 MB on disk, which is what made the
+  first pass bundle only two of them. That was the wrong unit — the published
+  tarball goes from 217 KB to 295 KB, the five rule sets costing 78 KB between
+  them. `{:error, {:schematron_not_bundled, _}}` is now reachable only for a
+  profile that does not exist.
+
+  Two findings from that work, neither visible in the XSD:
+
+    * BT-111 (the VAT total in the accounting currency) only goes where BT-6
+      goes. MINIMUM has no `TaxCurrencyCode`, so emitting it there stated an
+      amount in a currency the document never declared. Every profile's schema
+      allows two `TaxTotalAmount`; the build/parse fixed point is what caught it.
+    * In MINIMUM the postal address and the tax registration belong to the seller
+      alone — required there (BR-08, BR-09), refused on the buyer. The XSD types
+      every party alike and accepts both; only the schematron says otherwise.
+
+- `mix facturx.harness`: the PDF/A-3 conformance and Python-parity oracle, until
+  now a Livebook run by hand. veraPDF over the output of all five profiles, plus
+  byte parity of the payload against `akretion/factur-x`. It lives under `dev/`,
+  compiled in `:dev` only, so it never reaches the published package.
+- Property-based tests (`stream_data`): the build/parse fixed point over
+  randomly pruned invoices, `Decimal` value *and* scale preservation, XMP
+  promotion idempotence and well-formedness, and PDF payload round-trips over
+  arbitrary bytes.
+- Quality gates that did not exist: Dialyzer (the public API is almost entirely
+  `@spec`-ed and nothing checked those specs), Credo, and coverage.
+- CI now runs an OTP/Elixir matrix down to the `~> 1.15` floor declared in
+  `mix.exs`, which had never been compiled.
+
+### Changed
+- The Saxon image passes `--timeout 300000`. Its help text says "the maximum
+  time a transformation is allowed to run" without a unit, and the unit is
+  **milliseconds** — `--timeout 300` gives 300 ms and fails nearly every
+  transformation. It needs raising because the stock default is short enough that
+  the emulated arm64 run exceeds it under concurrent requests.
+- `Facturx.ValidateTest` is no longer `async`. Every `:saxon` test posts to one
+  shared server, and sixteen concurrent transformations of a multi-megabyte
+  stylesheet is how that timeout started firing, as an HTTP 400 on whichever test
+  was unlucky. The concurrency bought nothing: the work is all on the far side of
+  one socket.
+- The byte-level PDF rules shared by `Facturx.Embed` and `Facturx.Extract` —
+  where a stream stops, where a dictionary closes, how an EOL is skipped — move
+  to a single internal module, Facturx.PDF. They had been written twice and had
+  to be fixed twice for the same bug.
+- `README.md` documents which PDFs the library accepts and which it refuses,
+  error tuple by error tuple, plus the one limit no error can express: an
+  incremental update invalidates an existing digital signature.
+- `Facturx.XSD.Cache` is documented rather than hidden, clearing the two
+  long-standing ExDoc warnings.
+
 ## [0.6.0] - 2026-08-11
 
 Full coverage of the French regulatory Flux 1 data set — **96/116 → 116/116** —

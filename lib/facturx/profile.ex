@@ -10,6 +10,20 @@ defmodule Facturx.Profile do
   def to_urn(:en16931), do: "urn:cen.eu:en16931:2017"
   def to_urn(:extended), do: "urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended"
 
+  # The five profiles are strictly nested: every element name the MINIMUM schema
+  # declares is in BASIC WL, and so on up to EXTENDED (verified by diffing the
+  # five bundled XSDs). That is what lets a single ordering decide what
+  # `Facturx.CII` may emit, instead of one predicate per profile per element.
+  #
+  # Nesting holds for element *names*, not for where they may appear: BASIC WL
+  # allows `ram:ApplicableTradeTax` at header level only, BASIC also at line
+  # level. So the floor belongs on the emitter, never on the element.
+  @rank %{minimum: 0, basic_wl: 1, basic: 2, en16931: 3, extended: 4}
+
+  @doc "Whether `profile` is `floor` or richer."
+  @spec at_least?(Facturx.profile(), Facturx.profile()) :: boolean()
+  def at_least?(profile, floor), do: Map.fetch!(@rank, profile) >= Map.fetch!(@rank, floor)
+
   @spec from_urn(String.t() | nil) :: Facturx.profile() | nil
   def from_urn(nil), do: nil
 

@@ -22,8 +22,33 @@ projects, and to fill the gap on Hex.pm.
 | Parse CII XML into a struct | `Facturx.CII` | none (pure Elixir) |
 | Extract the embedded XML from a PDF | `Facturx.Extract` | none (pure Elixir) |
 | Embed XML into an existing PDF/A-3 | `Facturx.Embed` | none (pure Elixir) |
-| Validate against EN 16931 XSD | `Facturx.XSD` | none (pure Elixir, OTP `:xmerl_xsd`) |
-| Validate against EN 16931 Schematron | `Facturx.Validate` | **optional** — `:req` + a Saxon HTTP endpoint |
+| Validate against the CII XSD | `Facturx.XSD` | none (pure Elixir, OTP `:xmerl_xsd`) |
+| Validate against the Schematron | `Facturx.Validate` | **optional** — `:req` + a Saxon HTTP endpoint |
+
+### Profiles
+
+All five Factur-X profiles are built, and `Facturx.CII.build/2` restricts what it
+emits to what each one allows — a `:minimum` document is a MINIMUM document, not
+an EN 16931 one wearing a MINIMUM label.
+
+| Profile | Carries | XSD bundled | Schematron bundled |
+|---|---|---|---|
+| `:minimum` | header only; no VAT breakdown, no lines. Seller address only | ✅ | ✅ |
+| `:basic_wl` | full header, no lines ("without lines") | ✅ | ✅ |
+| `:basic` | header and lines, EN 16931-compliant subset | ✅ | ✅ |
+| `:en16931` | the norm itself | ✅ | ✅ |
+| `:extended` | the norm plus the French `EXT-FR-FE-*` extensions | ✅ | ✅ |
+
+Both validators cover all five. `priv/` is 4.4 MB on disk, almost all of it
+schematron, but it compresses to a 295 KB package — the five rule sets cost
+78 KB of that, which is why they all ship. Each profile is checked against its
+own schema *and* its own rule set in CI.
+
+> **MINIMUM is not an invoice.** Its schema has no `ram:ApplicableTradeTax`, so
+> it cannot carry the VAT breakdown (BG-23) that the French mandate requires from
+> day one. It exists as an accounting aid. BASIC WL carries no lines, which the
+> mandate requires on its target trajectory (BG-25). Neither is a valid French
+> e-invoice; `:basic` is the leanest profile that is.
 
 The EN 16931 Schematron ships compiled in `priv/schematron/`. `validate/2` posts
 the XML + XSLT to a Saxon server and reads back the SVRL report. The XSLT resolves
@@ -41,12 +66,44 @@ Python library does):
   default, self-hosted recommended in production for privacy). It is opt-in and
   disabled by default.
 
+### Which PDFs the library accepts
+
+`Facturx.Embed` works by incremental update: the base file is preserved byte for
+byte and the new objects are appended. What that rules out, each with its own
+error rather than a silent wrong answer:
+
+Both cross-reference forms are read and written: the classic table, and the
+PDF 1.5+ stream with its objects compressed into object streams — the shape most
+current producers emit. An update is written back in the form the base uses,
+never as a hybrid.
+
+| Input | Result |
+|---|---|
+| PDF/A-1 | `{:error, {:unsupported_pdfa, "PDF/A-1"}}` — the standard forbids embedded files |
+| Not PDF/A at all | `{:error, :not_pdfa}` |
+| Already carries `/EmbeddedFiles` | `{:error, :already_has_embedded_files}` |
+| Indirect `/AF` or `/Names` in the catalog | `{:error, :af_indirect_unsupported}` / `{:error, :names_indirect_unsupported}` |
+| Encrypted (`/Encrypt`) | `{:error, :encrypted_pdf_unsupported}` on both paths — decrypt upstream |
+
+Malformed input is input, not a bug: `Facturx.Embed.embed/3` and
+`Facturx.Extract.extract/1` return `{:error, term()}` for any byte string
+whatsoever, and never raise.
+
+One point no error can express: **an incremental update invalidates an existing
+digital signature.** That is inherent to appending to a signed file — sign after
+embedding, not before.
+
+`Facturx.Extract` is deliberately more permissive than `Facturx.Embed`: it reads
+the attachment out of any PDF, PDF/A or not, because reading cannot damage the
+document.
+
 ## Installation
 
 ```elixir
 def deps do
   [
-    {:facturx, "~> 0.5"},
+    {:facturx, "~> 0.7"},
+    # decimal ~> 3.0 is required: every 2.x is affected by CVE-2026-32686.
     # only if you use Facturx.validate/2:
     {:req, "~> 0.5"}
   ]
@@ -86,6 +143,53 @@ invoice = %Facturx.Invoice{
 # You can also pass ready-made CII XML instead of a struct:
 # {:ok, facturx_pdf} = Facturx.generate(pdf_a2b_binary, cii_xml)
 ```
+
+### Let the library do the arithmetic
+
+`Facturx.totals/2` derives the line amounts, the VAT breakdown and the document
+totals — `BR-CO-10` to `BR-CO-17`, which the XSD does not check and only the
+Schematron catches, after the fact.
+
+```elixir
+invoice = %Facturx.Invoice{
+  number: "FA-2026-0042",
+  issue_date: ~D[2026-03-15],
+  currency: "EUR",
+  seller: %{name: "Vendeur SAS", address: %{country: "FR"}, vat: "FR12345678901"},
+  buyer: %{name: "Acheteur SARL", address: %{country: "FR"}},
+  lines: [
+    %{id: "1", name: "Prestation", net_price: Decimal.new("33.33"),
+      quantity: Decimal.new("3"), unit: "C62",
+      vat_category: "S", vat_rate: Decimal.new("5.50")}
+  ]
+}
+
+{:ok, complete} = Facturx.totals(invoice)
+
+complete.totals[:line_total]   # => 99.99
+complete.totals[:tax_total]    # => 5.50   (BR-CO-17 rounds 5.49945 to the cent)
+complete.totals[:grand_total]  # => 105.49
+```
+
+A figure you supplied is kept, and a disagreement is reported rather than
+resolved:
+
+```elixir
+{:error, {:totals_mismatch, [{[:totals, :grand_total], given, computed}]}}
+```
+
+Pass `overwrite: true` to take the computed figures anyway. Two amounts are never
+derived, because nothing in the invoice determines them: `:prepaid` (BT-113) and
+`:rounding` (BT-114).
+
+`Facturx.new/1` is the other half — it builds an `Invoice` from a plain map,
+reporting every problem at once rather than the first, and coercing integers and
+strings to `Decimal`. **Floats are refused**: one that reaches it has usually
+been through float arithmetic already, and `0.1 + 0.2` is `0.30000000000000004`
+before anything here can see it.
+
+Both are optional. `Facturx.build/2` and `generate/3` take a bare struct or map
+exactly as before.
 
 ### Extract and parse a received invoice
 

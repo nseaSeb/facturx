@@ -1,5 +1,10 @@
 defmodule Facturx.ValidateTest do
-  use ExUnit.Case, async: true
+  # Not async: every `:saxon` test in here posts to one shared Saxon server, and
+  # sixteen concurrent transformations of a multi-megabyte stylesheet is how the
+  # server's own transformation timeout starts firing — an HTTP 400 on whichever
+  # test happened to be unlucky. Nothing is gained by the concurrency: the work
+  # is all on the far side of one socket.
+  use ExUnit.Case, async: false
 
   describe "interpret/1 (SVRL report parsing)" do
     test "an empty schematron-output is valid" do
@@ -91,10 +96,23 @@ defmodule Facturx.ValidateTest do
 
   describe "validate/2 without a network call" do
     test "refuses a profile whose schematron is not bundled" do
-      # :basic, not :extended — the latter is bundled since the EXTENDED rule set
-      # was added, and asking for it here would reach for a Saxon server.
-      assert Facturx.validate("<xml/>", profile: :basic) ==
-               {:error, {:schematron_not_bundled, :basic}}
+      # All five Factur-X profiles ship a rule set now, so this needs a profile
+      # that does not exist — asking for one that does would reach for a Saxon
+      # server, which this describe block is here to avoid.
+      assert Facturx.validate("<xml/>", profile: :zugferd_1p0) ==
+               {:error, {:schematron_not_bundled, :zugferd_1p0}}
+    end
+
+    test "every profile the library builds has its rule set bundled" do
+      # Reaching :saxon_unreachable means the stylesheet was found and read; the
+      # port is closed, so nothing leaves the machine.
+      for profile <- Facturx.profiles() do
+        result =
+          Facturx.validate("<xml/>", profile: profile, endpoint: "http://127.0.0.1:1/transform")
+
+        assert match?({:error, {:saxon_unreachable, _}}, result),
+               "#{profile}: expected the bundled stylesheet to load, got #{inspect(result)}"
+      end
     end
   end
 
@@ -576,5 +594,165 @@ defmodule Facturx.ValidateTest do
       assert Enum.all?(findings, &(&1.flag == "warning"))
       assert Enum.any?(findings, &(&1.message =~ "R008"))
     end
+  end
+
+  # The decisive test for Facturx.Invoice.totals/2. BR-CO-10 to BR-CO-17 and the
+  # per-category basis rules are checked by the schematron and by nothing else —
+  # not by the XSD, and not by any assertion we could write ourselves without
+  # reimplementing the rules we are trying to verify.
+  describe "totals/2 against the business rules" do
+    @describetag :saxon
+    @describetag timeout: 300_000
+
+    setup do
+      url =
+        System.get_env("FACTURX_SAXON_URL") || raise "set FACTURX_SAXON_URL to run :saxon tests"
+
+      {:ok, endpoint: url}
+    end
+
+    test "an invoice whose every amount was derived is accepted", %{endpoint: endpoint} do
+      reference = Facturx.TestInvoice.maximal()
+
+      bare = %{
+        reference
+        | lines: Enum.map(reference.lines, &Map.delete(&1, :line_total)),
+          tax_breakdown: Enum.map(reference.tax_breakdown, &Map.drop(&1, [:basis, :calculated])),
+          totals: Map.take(reference.totals, [:prepaid, :tax_total_in_tax_currency])
+      }
+
+      assert {:ok, computed} = Facturx.totals(bare)
+      assert {:ok, xml} = Facturx.build(computed, profile: :en16931)
+
+      assert {:ok, :valid} =
+               Facturx.validate(xml,
+                 endpoint: endpoint,
+                 codedb_url: "file:///opt/facturx/FACTUR-X_EN16931_codedb.xml",
+                 receive_timeout: 120_000
+               )
+    end
+
+    test "and so is one built from prices alone, with no reference to copy",
+         %{endpoint: endpoint} do
+      d = &Decimal.new/1
+      reference = Facturx.TestInvoice.maximal()
+
+      # Rates chosen so the VAT does not land on a round cent: 5.5% of 33.33 is
+      # 1.83315, which BR-CO-17 requires rounded to 1.83. A rule about rounding
+      # is only exercised by an amount that needs rounding.
+      invoice = %{
+        reference
+        | tax_currency: nil,
+          allowances: [],
+          charges: [],
+          preceding_invoices: [],
+          business_process: "S1",
+          lines: [
+            %{
+              id: "1",
+              name: "Prestation",
+              net_price: d.("33.33"),
+              quantity: d.("3"),
+              unit: "C62",
+              vat_category: "S",
+              vat_rate: d.("5.50")
+            },
+            %{
+              id: "2",
+              name: "Fourniture",
+              net_price: d.("12.34"),
+              quantity: d.("7"),
+              unit: "C62",
+              vat_category: "S",
+              vat_rate: d.("20.00")
+            }
+          ],
+          tax_breakdown: [],
+          totals: %{}
+      }
+
+      assert {:ok, computed} = Facturx.totals(invoice)
+
+      # 99.99 at 5.5 -> 5.50 ; 86.38 at 20 -> 17.28
+      assert Decimal.equal?(computed.totals[:line_total], d.("186.37"))
+      assert Decimal.equal?(computed.totals[:tax_total], d.("22.78"))
+      assert Decimal.equal?(computed.totals[:grand_total], d.("209.15"))
+
+      assert {:ok, xml} = Facturx.build(computed, profile: :en16931)
+
+      assert {:ok, :valid} =
+               Facturx.validate(xml,
+                 endpoint: endpoint,
+                 codedb_url: "file:///opt/facturx/FACTUR-X_EN16931_codedb.xml",
+                 receive_timeout: 120_000
+               )
+    end
+  end
+
+  # The three lower profiles are the ones the XSD cannot police on its own. It
+  # types every party alike, so it accepts a MINIMUM buyer carrying an address
+  # and a VAT registration; only the schematron says those belong to the seller
+  # and to nobody else. Which is exactly how that rule was found.
+  describe "against the bundled schematron of every profile" do
+    @describetag :saxon
+    @describetag timeout: 300_000
+
+    setup do
+      url =
+        System.get_env("FACTURX_SAXON_URL") || raise "set FACTURX_SAXON_URL to run :saxon tests"
+
+      {:ok, endpoint: url}
+    end
+
+    for profile <- [:minimum, :basic_wl, :basic, :en16931, :extended] do
+      test "a #{profile} document passes the #{profile} business rules", %{endpoint: endpoint} do
+        profile = unquote(profile)
+        {:ok, xml} = Facturx.build(Facturx.TestInvoice.maximal(), profile: profile)
+
+        # The code-list DB is resolved by the XSLT through document(), which
+        # Saxon only allows with --insecure. The container carries all five, so
+        # point the stylesheet at the local file rather than at the network.
+        opts = [
+          endpoint: endpoint,
+          profile: profile,
+          codedb_url: "file:///opt/facturx/#{codedb(profile)}",
+          receive_timeout: 120_000
+        ]
+
+        assert {:ok, outcome} = Facturx.validate(xml, opts)
+        assert by_rule_id(outcome) == expected(profile)
+      end
+    end
+
+    # EXTENDED alone comes back with a finding, and it is a real one rather than
+    # a cosmetic. BR-FXEXT-E-08rev reconciles the exempt VAT breakdown (BG-23,
+    # BT-116) against the exempt line amounts — but only over lines whose own
+    # ram:ApplicableTradeTax repeats the exemption reason and code. `Facturx.CII`
+    # emits those at header level only, so the sum matches no line and reads 0
+    # against a 50.00 basis. It is flagged "warning", hence non-blocking, and it
+    # is pinned by rule id rather than waved through: emitting the exemption
+    # reason at line level is what would clear it.
+    defp expected(:extended), do: {:valid_with_warnings, ["BR-FXEXT-E-08rev"]}
+    defp expected(_profile), do: :valid
+
+    # Compare on rule ids: the messages are several hundred characters of XPath
+    # prose, and they change with the upstream rule set without the rule doing so.
+    defp by_rule_id(:valid), do: :valid
+
+    defp by_rule_id({:valid_with_warnings, findings}),
+      do: {:valid_with_warnings, Enum.map(findings, &rule_id/1)}
+
+    defp rule_id(%{message: message}) do
+      case Regex.run(~r/\[([A-Za-z0-9-]+)\]/, message || "") do
+        [_, id] -> id
+        _ -> message
+      end
+    end
+
+    defp codedb(:minimum), do: "FACTUR-X_MINIMUM_codedb.xml"
+    defp codedb(:basic_wl), do: "FACTUR-X_BASIC-WL_codedb.xml"
+    defp codedb(:basic), do: "FACTUR-X_BASIC_codedb.xml"
+    defp codedb(:en16931), do: "FACTUR-X_EN16931_codedb.xml"
+    defp codedb(:extended), do: "FACTUR-X_EXTENDED_codedb.xml"
   end
 end

@@ -8,8 +8,73 @@ on:
 permissions:
   contents: read
 
+# A new push supersedes the run in flight; only the branch's latest commit is
+# worth the Saxon build.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The floor declared in mix.exs (elixir: "~> 1.15"). Until this ran,
+          # that requirement was an untested claim.
+          - otp: "26"
+            elixir: "1.15"
+          - otp: "27"
+            elixir: "1.17"
+          - otp: "28"
+            elixir: "1.19"
+            lint: true
+    name: test (OTP ${{ matrix.otp }} / Elixir ${{ matrix.elixir }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+
+      # The version pair belongs in the key: _build holds BEAM files compiled by
+      # one Elixir, and restore-keys would otherwise hand them to another.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-
+
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      # :local and :saxon tests are auto-excluded without their fixtures/server.
+      # The schematron job below covers :saxon.
+      - run: mix test
+
+      # Formatting, style and unused deps do not vary by OTP version; running
+      # them once keeps a lint failure from showing up three times.
+      - run: mix format --check-formatted
+        if: matrix.lint
+      - run: mix credo --strict
+        if: matrix.lint
+      - run: mix deps.unlock --check-unused
+        if: matrix.lint
+      - run: mix hex.audit
+        if: matrix.lint
+      - run: MIX_ENV=dev mix docs
+        if: matrix.lint
+
+  # Dialyzer is what checks the @spec the public API is almost entirely made of;
+  # nothing verified them before. Kept apart for its PLT cache, which is large
+  # and has nothing to do with the test cache.
+  dialyzer:
     runs-on: ubuntu-latest
     env:
       MIX_ENV: test
@@ -26,16 +91,44 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-dialyzer-28-1.19-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-
+            ${{ runner.os }}-dialyzer-28-1.19-
 
       - run: mix deps.get
-      - run: mix format --check-formatted
-      - run: mix compile --warnings-as-errors
-      # :local and :saxon tests are auto-excluded without their fixtures/server.
-      # The schematron job below covers :saxon.
-      - run: mix test
+      - run: mix dialyzer --format github
+
+  coverage:
+    runs-on: ubuntu-latest
+    # coveralls.github needs a token that can post. On a pull request from a
+    # fork the GITHUB_TOKEN is read-only, so the upload fails and turns CI red
+    # for a contributor whose change is fine — CONTRIBUTING.md invites exactly
+    # those pull requests.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      MIX_ENV: test
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-28-1.19-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-28-1.19-
+
+      - run: mix deps.get
+      - run: mix coveralls.github
 
   # Runs the bundled EN 16931 schematron against invoices the library builds.
   # Kept separate so the job above stays free of any Docker dependency, and so a
@@ -57,9 +150,9 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-28-1.19-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-
+            ${{ runner.os }}-mix-28-1.19-
 
       # Built here rather than pulled from a registry: the image embeds the
       # code-list DB from priv/, so nothing is redistributed and the ruleset

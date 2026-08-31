@@ -51,8 +51,9 @@ defmodule Facturx.TestPDF do
   A base whose cross-reference is an xref *stream* rather than a table, and
   which consequently has no `trailer` keyword.
 
-  This is the PDF 1.5+ shape both modules decline to touch (ADR 0001); it exists
-  here to pin that refusal, not to be embedded into.
+  The PDF 1.5+ shape. `Facturx.Embed` writes an update back to it in kind, and
+  never a hybrid: a classic table appended to a stream-based document is exactly
+  what a strict reader is entitled to reject.
   """
   def xref_stream_base(opts \\ []) do
     objects = objects(opts)
@@ -67,7 +68,7 @@ defmodule Facturx.TestPDF do
       for n <- 0..(size - 1), into: <<>> do
         case Map.fetch(offsets, n) do
           {:ok, offset} -> <<1, offset::32, 0::16>>
-          :error -> <<0, 0::32, 65535::16>>
+          :error -> <<0, 0::32, 65_535::16>>
         end
       end
 
@@ -82,6 +83,83 @@ defmodule Facturx.TestPDF do
       data <>
       "\nendstream\nendobj\n" <>
       "startxref\n#{xref_offset}\n%%EOF\n"
+  end
+
+  @doc """
+  A base whose non-stream objects live in an object stream, indexed by a
+  cross-reference stream.
+
+  What a PDF 1.5+ producer actually writes, and the shape that matters: the
+  **catalog is compressed**, so looking for `1 0 obj` in the raw bytes does not
+  find it. Streams stay top level — PDF 32000-1, 7.5.7, forbids one inside an
+  object stream — so the metadata and the content are where they were.
+
+  Options are those of `base/1`; `:catalog_extra` and `:extra_objects` still
+  apply, the extras staying top level so a test can reach the merge branches.
+  """
+  def objstm_base(opts \\ []) do
+    all = objects(opts)
+
+    {streams, packed} =
+      Enum.split_with(all, fn {_n, body} -> String.contains?(body, "stream\n") end)
+
+    objstm_num = size(all)
+    xref_num = objstm_num + 1
+    size = xref_num + 1
+
+    {body, offsets} = write_objects(streams)
+
+    {objstm, positions} = object_stream(packed, objstm_num)
+    objstm_offset = byte_size(body)
+    body = body <> objstm
+    offsets = Map.put(offsets, objstm_num, objstm_offset)
+
+    xref_offset = byte_size(body)
+    offsets = Map.put(offsets, xref_num, xref_offset)
+
+    data =
+      for n <- 0..(size - 1), into: <<>> do
+        cond do
+          Map.has_key?(offsets, n) -> <<1, Map.fetch!(offsets, n)::32, 0::16>>
+          Map.has_key?(positions, n) -> <<2, objstm_num::32, Map.fetch!(positions, n)::16>>
+          true -> <<0, 0::32, 65_535::16>>
+        end
+      end
+
+    dict =
+      "<< /Type /XRef /Size #{size} /W [1 4 2] /Root 1 0 R /Info 6 0 R" <>
+        " /Length #{byte_size(data)} >>"
+
+    body <>
+      "#{xref_num} 0 obj\n" <>
+      dict <>
+      "\nstream\n" <>
+      data <>
+      "\nendstream\nendobj\n" <>
+      "startxref\n#{xref_offset}\n%%EOF\n"
+  end
+
+  # The object stream itself: a header of `number offset` pairs, then the
+  # objects, the first at `/First`. Returns the object and where each number sits.
+  defp object_stream(packed, num) do
+    {header, bodies, _cursor, positions} =
+      packed
+      |> Enum.with_index()
+      |> Enum.reduce({[], [], 0, %{}}, fn {{n, body}, index}, {head, acc, cursor, pos} ->
+        {head ++ ["#{n} #{cursor}"], acc ++ [body], cursor + byte_size(body) + 1,
+         Map.put(pos, n, index)}
+      end)
+
+    head = Enum.join(header, " ") <> "\n"
+    data = head <> Enum.join(bodies, "\n") <> "\n"
+
+    obj =
+      "#{num} 0 obj\n" <>
+        "<< /Type /ObjStm /N #{length(packed)} /First #{byte_size(head)}" <>
+        " /Length #{byte_size(data)} >>\nstream\n" <>
+        data <> "\nendstream\nendobj\n"
+
+    {obj, positions}
   end
 
   @doc """

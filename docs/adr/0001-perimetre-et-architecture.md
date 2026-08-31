@@ -109,3 +109,40 @@ stocké dans une struct / un state de process / un cache) doit passer par
 2. `Facturx.CII` (parse + build).
 3. `Facturx.Embed` (le plus délicat : XMP + structure PDF/A-3).
 4. `Facturx.Validate` (client HTTP Saxon, optionnel).
+
+## Révision du 2026-08-31 — validation et calcul au niveau struct
+
+La décision d'origine était de n'offrir aucune validation au niveau de la
+struct : maps nues, pas de constructeur, pas de coercition. Elle tenait tant que
+la bibliothèque ne faisait que traduire une structure en XML.
+
+Deux choses l'ont fait bouger, dans cet ordre :
+
+1. **CVE-2026-32686.** `parse/1` prend des factures venues de tiers, et rendait
+   un `Decimal` d'exposant non borné, dont la première addition côté appelant
+   pouvait saturer la BEAM. Le correctif immédiat était le plancher
+   `decimal ~> 3.0`, mais il a rendu visible qu'aucune frontière n'existait où
+   refuser une valeur : la lib transmettait tout ce qu'on lui donnait.
+
+2. **Les totaux.** L'appelant devait calculer à la main BT-106 à BT-115 et la
+   ventilation TVA, soit une dizaine de règles `BR-CO-*` qu'aucun XSD ne vérifie
+   et que seul le Schematron attrape — après coup, sur un rapport SVRL.
+
+Ajoutés en conséquence, tous deux **optionnels** :
+
+- `Facturx.Invoice.new/1` valide et coerce. Les entiers et les chaînes deviennent
+  des `Decimal` ; **les flottants sont refusés**. `Decimal.from_float/1` est
+  pourtant fidèle, mais un flottant arrivé jusque-là a en général déjà traversé
+  de l'arithmétique flottante, et `0.1 + 0.2` vaut `0.30000000000000004` avant
+  que quoi que ce soit ici ne puisse le voir. L'accepter reviendrait à enregistrer
+  la dérive et à l'appeler « validé ». Le choix d'origine — pas de float pour un
+  montant légal — est donc renforcé, pas assoupli.
+
+- `Facturx.Invoice.totals/2` dérive les montants de ligne, la ventilation TVA et
+  les totaux document. Ce qui a été fourni est conservé, et un désaccord est
+  **rapporté** plutôt que résolu : c'est une information sur la facture, pas une
+  broutille à corriger en silence.
+
+Ce qui n'a pas changé : `CII.build/2` accepte toujours une struct ou une map nue,
+sans passer par `new/1`. Rien de tout cela n'est sur le chemin obligatoire.
+
